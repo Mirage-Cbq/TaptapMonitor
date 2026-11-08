@@ -1,7 +1,7 @@
 #!/bin/sh
 # TaptapMonitor 一键安装 / 原地转换脚本（Debian/Ubuntu，需要 root）。
 #
-#   curl -fsSL https://raw.githubusercontent.com/Mirage-Cbq/TaptapMonitor/main/scripts/install.sh | sudo sh
+#   git clone https://github.com/Mirage-Cbq/TaptapMonitor.git /tmp/TaptapMonitor && sudo sh /tmp/TaptapMonitor/scripts/install.sh
 #
 # 可重复执行：已存在的 data/（数据库、图片）、config.toml 与 /etc/taptap-monitor.env 永远保留。
 # 若 /opt/taptap-monitor/taptap-monitor 是旧的非 git 安装，会被原地转换为 git 仓库。

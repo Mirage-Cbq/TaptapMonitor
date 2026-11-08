@@ -13,8 +13,10 @@ TapTap 厂商作品监测与官网生成系统。系统会自动发现厂商的�
 适用于 Debian/Ubuntu 服务器，需要 root 权限：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Mirage-Cbq/TaptapMonitor/main/scripts/install.sh | sudo sh
+git clone https://github.com/Mirage-Cbq/TaptapMonitor.git /tmp/TaptapMonitor && sudo sh /tmp/TaptapMonitor/scripts/install.sh
 ```
+
+> 国内服务器通常无法访问 `raw.githubusercontent.com`，但可以访问 `github.com`，所以这里用 `git clone` 获取安装脚本。如果 PyPI 下载较慢，可以先执行 `pip config --global set global.index-url https://mirrors.aliyun.com/pypi/simple/` 写入 `/etc/pip.conf`。依赖带有哈希校验，换成镜像源同样安全，之后的在线升级也会使用这个源。
 
 安装脚本可以重复执行，会依次完成以下工作：
 
@@ -68,7 +70,7 @@ sudo python3 /opt/taptap-monitor/taptap-monitor/scripts/updater.py apply        
 sudo python3 /opt/taptap-monitor/taptap-monitor/scripts/updater.py apply --ref 1a2b3c4  # 切换到指定版本
 ```
 
-如果使用自己的 fork，可以这样安装：先执行 `REPO_URL=https://github.com/你/TaptapMonitor.git`，再运行 `install.sh`。之后服务器就会从你的仓库拉取更新。
+如果使用自己的 fork，可以用 `sudo REPO_URL=https://github.com/你/TaptapMonitor.git sh install.sh` 安装。之后服务器就会从你的仓库拉取更新。
 
 ### 配置
 

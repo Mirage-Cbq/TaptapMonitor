@@ -425,7 +425,7 @@
   /* ---------- 系统升级 ---------- */
   const short=sha=>(sha || '').slice(0,7);
   const when=iso=>iso ? new Date(iso).toLocaleString('zh-CN',{hour12:false}) : '';
-  const INSTALL='curl -fsSL https://raw.githubusercontent.com/Mirage-Cbq/TaptapMonitor/main/scripts/install.sh | sudo sh';
+  const INSTALL='git clone https://github.com/Mirage-Cbq/TaptapMonitor.git /tmp/TaptapMonitor && sudo sh /tmp/TaptapMonitor/scripts/install.sh';
   const results={success:['ok','升级成功'],rolled_back:['interrupted','已自动回滚'],failed:['error','失败'],up_to_date:['ok','无需升级'],checked:['ok','检查完成']};
   let upgradeTimer=null, upgradeWatching=false;
   const busy=info=>info.pending || info.state==='checking' || info.state==='updating';
