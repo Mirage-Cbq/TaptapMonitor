@@ -1,0 +1,9 @@
+[Unit]
+Description=TaptapMonitor - watch for update requests from the admin console
+
+[Path]
+PathExists=/opt/taptap-monitor/taptap-monitor/data/upgrade/request.json
+Unit=taptap-monitor-update.service
+
+[Install]
+WantedBy=multi-user.target

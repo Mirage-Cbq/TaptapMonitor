@@ -423,69 +423,98 @@
   }
 
   /* ---------- 系统升级 ---------- */
-  const runState=run=>run.status!=='completed'?['running',run.status==='queued'?'排队中':'部署中']:run.conclusion==='success'?['ok','成功']:run.conclusion==='cancelled'?['interrupted','已取消']:['error','失败'];
   const short=sha=>(sha || '').slice(0,7);
-  let upgradeTarget=null, upgradeTimer=null, upgradeStarted=0;
+  const when=iso=>iso ? new Date(iso).toLocaleString('zh-CN',{hour12:false}) : '';
+  const INSTALL='curl -fsSL https://raw.githubusercontent.com/Mirage-Cbq/TaptapMonitor/main/scripts/install.sh | sudo sh';
+  const results={success:['ok','升级成功'],rolled_back:['interrupted','已自动回滚'],failed:['error','失败'],up_to_date:['ok','无需升级'],checked:['ok','检查完成']};
+  let upgradeTimer=null, upgradeWatching=false;
+  const busy=info=>info.pending || info.state==='checking' || info.state==='updating';
   function versionBox(label, version, className='') {
     const box=el('div','version-box '+className); box.append(el('span','label',label));
-    if (!version) {box.append(el('span','muted','未知（尚未通过自动部署发布）')); return box;}
-    box.append(el('span','sha',short(version.commit)),el('span','msg',version.message || ''),el('span','muted small',`提交于 ${new Date(version.date).toLocaleString('zh-CN',{hour12:false})}`+(version.deployed_at?` · 部署于 ${new Date(version.deployed_at).toLocaleString('zh-CN',{hour12:false})}`:'')));
+    if (!version) {box.append(el('span','muted','未知')); return box;}
+    box.append(el('span','sha',short(version.commit)),el('span','msg',version.message || ''),
+      el('span','muted small',`提交于 ${when(version.date)}`+(version.deployed_at?` · 部署于 ${when(version.deployed_at)}`:'')));
     return box;
   }
-  async function dispatchUpgrade(ref, label) {
-    if (!confirm(`确定${label}吗？\n\n部署期间服务会重启约 10–30 秒，升级前会自动备份数据库。`)) return;
-    await api('system/upgrade','POST',{ref}); upgradeTarget=ref; upgradeStarted=Date.now();
-    notify(`已提交${label}请求，GitHub 正在测试并部署，通常需要 1–3 分钟。`); await loadUpgrade(); watchUpgrade();
+  async function requestUpgrade(ref, label) {
+    if (!confirm(`确定${label}吗？\n\n服务器会从 GitHub 拉取该版本并重启服务（约 10–30 秒），升级前自动备份数据库，启动失败会自动回滚。`)) return;
+    renderUpgrade(await api('system/upgrade','POST',{ref})); watchUpgrade();
   }
   function watchUpgrade() {
-    clearTimeout(upgradeTimer);
+    clearTimeout(upgradeTimer); upgradeWatching=true;
     upgradeTimer=setTimeout(async()=>{
-      if (!upgradeTarget) return;
-      try {
-        const info=await api('system');
-        if (info.version?.commit && (upgradeTarget==='main' ? false : info.version.commit.startsWith(upgradeTarget))) {upgradeTarget=null; notify('升级完成，系统已运行新版本。'); await loadUpgrade(); return;}
-        if (view==='settings') await loadUpgrade(true);
-      } catch {$('#upgrade-progress') && ($('#upgrade-progress').textContent='服务正在重启，稍候自动重连…');}
-      if (Date.now()-upgradeStarted>10*60*1000) {upgradeTarget=null; notify('升级等待超时，请在 GitHub Actions 查看部署日志。'); return;}
-      watchUpgrade();
-    },6000);
+      let info;
+      try {info=await api('system');}
+      catch {const node=$('#upgrade-progress'); if (node) node.textContent='服务正在重启，稍候自动重连…'; watchUpgrade(); return;}
+      if (view==='settings') renderUpgrade(info);
+      if (busy(info)) {watchUpgrade(); return;}
+      upgradeWatching=false; if (info.message) notify(info.message);
+    },3000);
   }
-  async function loadUpgrade(quiet=false) {
-    const body=$('#upgrade-body'); if (!quiet) body.replaceChildren(el('p','muted','正在读取版本信息…'));
-    const info=await api('system');
-    if (!info.upgrade_configured) {
-      const steps=el('ol','setup-steps');
-      [['在 GitHub 创建仓库级 fine-grained 令牌，仓库选择 ',info.repo || '项目仓库','，权限：Actions 读写、Contents 只读。'],
-       ['在服务器 ','/etc/taptap-monitor.env',' 中添加一行 GITHUB_TOKEN=令牌。'],['执行 ','systemctl restart taptap-monitor',' 后刷新本页。']].forEach(([a,code,b])=>{const li=el('li'); li.append(a,el('code','',code),b); steps.append(li);});
-      const grid=el('div','version-grid'); grid.append(versionBox('当前运行版本',info.version));
-      body.replaceChildren(grid,el('p','muted','后台升级尚未启用。推送到 GitHub main 分支仍会自动部署；如需在此一键升级或回滚：'),steps); return;
+  function commitRow(commit, tag, tagClass) {
+    const row=el('div','deploy-run');
+    row.append(el('span','chip '+tagClass,tag),el('span','title',commit.message),el('code','',`${short(commit.commit)} · ${ago(Date.parse(commit.date)/1000)}`));
+    return row;
+  }
+  function renderUpgrade(info) {
+    const body=$('#upgrade-body');
+    $('#check-updates').hidden=!info.installed;
+    if (!info.installed) {
+      const steps=el('ol','setup-steps'), first=el('li'), second=el('li');
+      first.append('在服务器上以 root 运行安装脚本（已有安装会原地转换，数据与配置保留）：',el('pre','command',INSTALL));
+      second.append('完成后刷新本页，即可在这里检查更新、一键升级与回滚。');
+      steps.append(first,second);
+      body.replaceChildren(versionBox('当前运行版本',info.version),el('p','muted','服务器尚未安装更新服务。更新服务以独立的系统任务运行，从 GitHub 拉取官方版本：'),steps);
+      return;
     }
-    let updates;
-    try {updates=await api('system/updates');}
-    catch(error) {const grid=el('div','version-grid'); grid.append(versionBox('当前运行版本',info.version)); body.replaceChildren(grid,el('p','error',error.message)); return;}
-    const current=updates.version, latest=updates.latest, behind=!current || current.commit!==latest.commit;
-    const grid=el('div','version-grid'); grid.append(versionBox('当前运行版本',current),versionBox(behind?'GitHub 最新版本（可升级）':'GitHub 最新版本',latest,behind?'new':''));
+    const current=info.current || info.version, latest=info.latest, behind=info.behind || [], running=busy(info);
+    const grid=el('div','version-grid');
+    grid.append(versionBox('当前运行版本',current),versionBox(behind.length?`最新版本（落后 ${behind.length} 个更新）`:'最新版本',latest,behind.length?'new':''));
     const nodes=[grid];
-    const active=updates.runs.find(run=>run.status!=='completed');
-    if (active || upgradeTarget) nodes.push(el('p','upgrade-progress',active?`${runState(active)[1]}：${active.display_title || short(active.head_sha)}`:'正在等待 GitHub 开始部署…'));
-    if (active) nodes[nodes.length-1].id='upgrade-progress';
-    const actions=el('div','actions');
-    if (behind && !active) actions.append(button(`升级到最新版 ${short(latest.commit)}`,()=>dispatchUpgrade(latest.commit,`升级到 ${short(latest.commit)}`),'primary'));
-    else if (!active) actions.append(el('span','chip ok','已是最新版本'));
-    nodes.push(actions);
-    if (updates.runs.length) {
-      const list=el('div','deploy-runs'); list.append(el('h3','small muted','最近部署'));
-      updates.runs.slice(0,8).forEach(run=>{
-        const [cls,text]=runState(run), row=el('div','deploy-run'), title=el('span','title',run.display_title || '部署');
-        row.append(el('span','chip '+cls,text),title,el('code','',`${short(run.head_sha)} · ${ago(Date.parse(run.created_at)/1000)}`));
-        const ops=el('div','actions'); ops.append(link('日志',run.html_url,'link'));
-        if (run.conclusion==='success' && current && run.head_sha!==current.commit && !active) ops.append(button('回滚到此版本',()=>dispatchUpgrade(run.head_sha,`回滚到 ${short(run.head_sha)}`),'ghost'));
-        row.append(ops); list.append(row);
+    if (running) {const progress=el('p','upgrade-progress',info.pending?'已提交，等待更新服务启动…':info.message || '处理中…'); progress.id='upgrade-progress'; nodes.push(progress);}
+    else if (results[info.result]) {
+      const line=el('p','upgrade-result'), [cls,text]=results[info.result];
+      line.append(el('span','chip '+cls,text),el('span','',info.message || ''),el('span','muted small',info.finished_at?ago(Date.parse(info.finished_at)/1000):''));
+      nodes.push(line);
+    }
+    const actions=el('div','actions upgrade-actions');
+    if (behind.length && !running) actions.append(button(`升级到最新版 ${short(latest.commit)}`,()=>requestUpgrade('latest',`升级到最新版 ${short(latest.commit)}`),'primary'));
+    else if (!running && latest) actions.append(el('span','chip ok','已是最新版本'));
+    const auto=switchControl('每天凌晨自动升级到最新版',!!info.auto);
+    auto.input.disabled=running;
+    auto.input.addEventListener('change',guarded(async()=>{
+      try {renderUpgrade(await api('system/auto','PUT',{enabled:auto.input.checked})); notify(auto.input.checked?'已开启自动升级。':'已关闭自动升级。');}
+      catch(error) {auto.input.checked=!auto.input.checked; throw error;}
+    }));
+    actions.append(auto.label); nodes.push(actions);
+    if (info.checked_at) nodes.push(el('p','muted small',`上次检查：${when(info.checked_at)} · 分支 ${info.branch || 'main'}`));
+    if (behind.length) {
+      const list=el('div','deploy-runs'); list.append(el('h3','small muted','待升级的更新'));
+      behind.slice(0,10).forEach(commit=>list.append(commitRow(commit,'新','new')));
+      nodes.push(list);
+    }
+    const history=(info.history || []).filter(commit=>!behind.some(item=>item.commit===commit.commit));
+    if (history.length) {
+      const list=el('details','deploy-runs history'); list.append(el('summary','small muted','版本历史与回滚'));
+      history.forEach(commit=>{
+        const isCurrent=current && commit.commit===current.commit, row=commitRow(commit,isCurrent?'当前':'历史',isCurrent?'ok':'muted');
+        if (!isCurrent && !running) row.append(button('回滚到此版本',()=>requestUpgrade(commit.commit,`回滚到 ${short(commit.commit)}`),'ghost'));
+        list.append(row);
       });
       nodes.push(list);
     }
+    if (info.log?.length) {
+      const details=el('details','upgrade-log'); details.append(el('summary','small muted','更新日志'),el('pre','',info.log.slice(-30).join('\n')));
+      details.open=running; nodes.push(details);
+    }
     body.replaceChildren(...nodes);
   }
+  async function loadUpgrade() {
+    const body=$('#upgrade-body'); if (!body.childElementCount) body.replaceChildren(el('p','muted','正在读取版本信息…'));
+    const info=await api('system'); renderUpgrade(info);
+    if (busy(info) && !upgradeWatching) watchUpgrade();
+  }
+  async function checkUpdates() {renderUpgrade(await api('system/check','POST')); watchUpgrade();}
 
   /* ---------- 路由与事件 ---------- */
   async function route(focus=false) {
@@ -538,7 +567,7 @@
   $('#reset-logo').addEventListener('click',guarded(async()=>{await api(`sites/${developerId}/logo`,'DELETE'); await loadCatalog(); await loadSite(); renderDevelopers(); notify('已恢复使用 TapTap 厂商图标。');}));
   $('#set-primary').addEventListener('click',guarded(async()=>{await api('site-default/'+developerId,'PUT'); await loadSite(); notify('默认官网已更新。');}));
   $('#refresh-runs').addEventListener('click',guarded(()=>loadRuns()));
-  $('#check-updates').addEventListener('click',guarded(()=>loadUpgrade()));
+  $('#check-updates').addEventListener('click',guarded(checkUpdates));
   $('#runtime-form').addEventListener('submit',guarded(async()=>{const save=$('#runtime-form button.primary'); save.disabled=true; try {await saveSettings();} finally {save.disabled=false;}}));
   window.addEventListener('hashchange',guarded(()=>route(true)));
   let resizeTimer;

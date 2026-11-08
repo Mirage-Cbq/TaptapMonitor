@@ -1,0 +1,21 @@
+[Unit]
+Description=TaptapMonitor - TapTap feedback monitor and studio website
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=taptap-monitor
+Group=taptap-monitor
+WorkingDirectory=/opt/taptap-monitor/taptap-monitor
+EnvironmentFile=/etc/taptap-monitor.env
+ExecStart=/opt/taptap-monitor/venv/bin/python -m uvicorn taptap_monitor.app:create_app --factory --host 127.0.0.1 --port 8080 --workers 1
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/opt/taptap-monitor/taptap-monitor/data
+
+[Install]
+WantedBy=multi-user.target

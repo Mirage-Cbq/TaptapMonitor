@@ -24,7 +24,7 @@ from .delivery import Delivery, digest_input, render_digest
 from .store import Store
 from .website import site_data
 from .lock import ProcessLock
-from .upgrade import GitHub, UpgradeError, current_version
+from .upgrade import Updater, UpgradeError
 from .media import MediaCache
 
 log = logging.getLogger(__name__)
@@ -59,10 +59,14 @@ class GameUpdate(BaseModel):
 
 
 class UpgradeRequest(BaseModel):
-    ref: str = Field(default="main", pattern=r"^(main|[0-9a-f]{7,40})$")
+    ref: str = Field(default="latest", pattern=r"^(latest|[0-9a-f]{7,40})$")
 
 
-def create_app(settings=None, *, client=None, scheduler_enabled=True, github_transport=None):
+class AutoUpgrade(BaseModel):
+    enabled: bool
+
+
+def create_app(settings=None, *, client=None, scheduler_enabled=True):
     settings = settings or Settings.load(os.environ.get("MONITOR_CONFIG", "config.toml"))
     if len(settings.api_token) < 24 or settings.api_token.startswith("replace-"):
         raise ValueError("Set MONITOR_API_TOKEN to a random token with at least 24 characters")
@@ -81,8 +85,7 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True, github_tra
     source = client or TapTapClient(settings)
     collector = Collector(store, source, settings)
     delivery = Delivery(store, settings)
-    github = GitHub(settings.upgrade_repo, settings.upgrade_workflow, settings.upgrade_branch, settings.github_token, github_transport)
-    code_root = Path(__file__).resolve().parent.parent
+    updater = Updater(Path(settings.database).resolve().parent, Path(__file__).resolve().parent.parent)
     scan_task = None
     active_run = None
     pending_developers = set()
@@ -124,7 +127,6 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True, github_tra
                         with suppress(asyncio.CancelledError):
                             await owned
                 await source.close()
-                await github.close()
 
     app = FastAPI(title="TapTap 作品监测", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store
@@ -252,24 +254,27 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True, github_tra
         return effective_settings()
 
     @api.get("/system")
-    async def system_info():
-        return {"version": current_version(code_root), "repo": settings.upgrade_repo, "branch": settings.upgrade_branch,
-                "upgrade_configured": github.configured}
+    async def system_status():
+        return updater.status()
 
-    @api.get("/system/updates")
-    async def system_updates():
+    def upgrade_call(action, *args):
         try:
-            return {**await github.latest(), "version": current_version(code_root)}
+            action(*args)
         except UpgradeError as exc:
-            raise HTTPException(502, str(exc)) from exc
+            raise HTTPException(409, str(exc)) from exc
+        return updater.status()
+
+    @api.post("/system/check", status_code=202)
+    async def system_check():
+        return upgrade_call(updater.request, "check")
 
     @api.post("/system/upgrade", status_code=202)
     async def system_upgrade(body: UpgradeRequest):
-        try:
-            await github.dispatch(body.ref)
-        except UpgradeError as exc:
-            raise HTTPException(502, str(exc)) from exc
-        return {"status": "dispatched", "ref": body.ref}
+        return upgrade_call(updater.request, "apply", body.ref)
+
+    @api.put("/system/auto")
+    async def system_auto(body: AutoUpgrade):
+        return upgrade_call(updater.set_auto, body.enabled)
 
     @api.get("/events")
     async def events(after: int = Query(0, ge=0), developer_id: int | None = None,

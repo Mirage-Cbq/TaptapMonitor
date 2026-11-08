@@ -1,45 +1,101 @@
-# TapTap 作品监测与厂商官网
+# TaptapMonitor
 
-一个可部署到 Linux 云服务器的轻量系统：自动发现厂商作品，采集评价、论坛和公开回复，保存历史与修改记录，同时根据 TapTap 的介绍和图片自动生成厂商官网。Python + FastAPI + SQLite，单容器、单进程运行，不依赖浏览器、Redis 或独立数据库。
+TapTap 厂商作品监测与官网生成系统。系统会自动发现厂商的全部作品，采集玩家评价、论坛帖子和公开回复，保存历史记录与修改记录，并根据 TapTap 上的介绍和图片自动生成厂商官网，同时提供一个可视化管理后台。
 
-首次配置已加入 [菜篮子工作室](https://www.taptap.cn/developer/383549)。厂商和作品不写在网页代码里，可以在后台继续添加。
+技术栈为 Python 3.12、FastAPI 和 SQLite，单进程运行，不依赖浏览器、Redis 或独立数据库。页面是纯静态的 HTML/CSS/JS，不需要构建，也不引用外部 CDN，可以直接部署在国内服务器上。
 
-## 云服务器部署
+- **管理后台**：数据概览（趋势、评分分布、作品排行）、反馈检索与导出、厂商与官网编辑、采集运行记录、系统设置，还能在线升级系统。
+- **厂商官网**：每天从管理系统同步作品数据。评分统一按 10 分制显示，官网不公开玩家评论。
+- **AI 与推送**：提供结构化的 AI 输入接口，也可以通过 AstrBot 定时推送事实简报。
 
-服务器需要 Docker Engine 和 Docker Compose v2。将项目上传并解压后：
+## 一键安装（推荐）
 
-```sh
-cd taptap-monitor
-sh scripts/deploy.sh
-docker compose ps
-docker compose logs --tail=100 monitor
-```
-
-脚本首次运行会生成 `.env`，其中包含随机的 `MONITOR_API_TOKEN`，不会覆盖已有文件。也可以使用 `python3 scripts/init_env.py` 生成，或自行创建 `.env`。不要使用 `.env.example` 中的占位令牌。
-
-默认绑定服务器 `127.0.0.1:8080`。通过 SSH 隧道查看：
+适用于 Debian/Ubuntu 服务器，需要 root 权限：
 
 ```sh
-ssh -L 8080:127.0.0.1:8080 user@your-server
+curl -fsSL https://raw.githubusercontent.com/Mirage-Cbq/TaptapMonitor/main/scripts/install.sh | sudo sh
 ```
 
-在电脑打开：
+安装脚本可以重复执行，会依次完成以下工作：
+
+1. 安装依赖，并创建低权限用户 `taptap-monitor`。
+2. 将仓库克隆到 `/opt/taptap-monitor/taptap-monitor`。
+3. 创建虚拟环境，按 `requirements.lock` 安装依赖，并校验哈希。
+4. 从 `config.example.toml` 生成 `config.toml`。
+5. 在 `/etc/taptap-monitor.env` 中生成随机的管理令牌。
+6. 安装并启动 systemd 服务。
+
+如果服务器上已有旧的非 git 安装，脚本会把它原地转换为 git 仓库。转换时 `data/`（数据库、图片缓存）、`config.toml` 和令牌文件都会保留。
+
+服务默认只监听 `127.0.0.1:8080`。可以先通过 SSH 隧道访问：
+
+```sh
+ssh -L 8080:127.0.0.1:8080 root@your-server
+```
+
+在电脑上打开以下地址：
 
 - 官网：`http://127.0.0.1:8080/`
-- 管理后台：`http://127.0.0.1:8080/admin`
+- 管理后台：`http://127.0.0.1:8080/admin`，用 `/etc/taptap-monitor.env` 中的 `MONITOR_API_TOKEN` 登录
 - 存活检查：`http://127.0.0.1:8080/healthz`
 
-后台使用 `.env` 里的管理令牌登录。正式域名可以通过服务器现有的反向代理转发到 `127.0.0.1:8080`；仓库提供了 `Caddyfile.example`，修改为自己的域名后可由 Caddy 配置 HTTPS。后台和反馈 API 均需要令牌，官网和图片为公开内容。
+### 公网访问
+
+建议只把官网公开给外部，后台继续通过 SSH 隧道使用。仓库里的 `deploy/nginx/taptap-monitor.conf` 已按这个思路配置，只转发官网与图片路径，其余路径一律返回 404。也可以参考 `Caddyfile.example` 用 Caddy 自动配置 HTTPS。
+
+### 在线升级
+
+后台「系统设置 → 系统升级」可以检查更新、一键升级到最新版、回滚到任意历史版本，还可以开启「每天凌晨自动升级」。
+
+升级采用拉取方式，服务器不需要开放任何入口，也不需要 GitHub 令牌：
+
+```text
+后台（低权限）──写入请求──▶ data/upgrade/request.json
+                                  │ systemd path 单元监测到文件
+                                  ▼
+             scripts/updater.py（root，一次性任务）
+             git fetch → 备份数据库 → 切换版本 → 依赖有变化才重新安装
+             → 重启服务 → 健康检查 → 未通过则自动回滚
+                                  │
+后台轮询 ◀──── data/upgrade/status.json（进度、结果、日志）
+```
+
+只有官方分支历史中的提交才能被部署，后台无法借此执行任意代码。每次升级前都会备份数据库到 `/opt/taptap-monitor/backups/`，默认保留 14 份。命令行也可以直接操作：
+
+```sh
+sudo python3 /opt/taptap-monitor/taptap-monitor/scripts/updater.py check
+sudo python3 /opt/taptap-monitor/taptap-monitor/scripts/updater.py apply              # 升级到最新版
+sudo python3 /opt/taptap-monitor/taptap-monitor/scripts/updater.py apply --ref 1a2b3c4  # 切换到指定版本
+```
+
+如果使用自己的 fork，可以这样安装：先执行 `REPO_URL=https://github.com/你/TaptapMonitor.git`，再运行 `install.sh`。之后服务器就会从你的仓库拉取更新。
+
+### 配置
+
+| 位置 | 内容 |
+| --- | --- |
+| `config.toml` | 采集间隔、翻页预算、是否采集回复、图片缓存、初始厂商和默认官网。修改后需要执行 `systemctl restart taptap-monitor` |
+| `/etc/taptap-monitor.env` | `MONITOR_API_TOKEN`，以及可选的 `ASTRBOT_BASE_URL` 和 `ASTRBOT_API_KEY` |
+| 后台「系统设置」 | 采集间隔、请求间隔与超时、翻页上限、图片缓存和简报推送。保存后立即生效，保存在数据库中 |
+
+`config.toml` 不纳入版本库，升级时不会被覆盖。仓库中只提供模板 `config.example.toml`。模板里默认监测的是[菜篮子工作室](https://www.taptap.cn/developer/383549)，你可以改成自己的厂商 ID，也可以在后台继续添加厂商。
+
+> **网络说明**：TapTap 网页版 `www.taptap.cn` 对部分云服务器 IP 启用了 WAF 拦截（返回 405 验证页）。本项目的数据接口改走移动版 `m.taptap.cn`，这条线路在云服务器上可以正常访问。
+
+### 使用 Docker（可选）
+
+需要 Docker Engine 和 Docker Compose v2：
+
+```sh
+git clone https://github.com/Mirage-Cbq/TaptapMonitor.git && cd TaptapMonitor
+sh scripts/deploy.sh
+```
+
+首次运行会生成 `config.toml` 和 `.env`（`.env` 中包含随机的管理令牌）。以后要更新时，执行 `git pull && docker compose up -d --build`。Docker 方式不支持后台的在线升级功能。
 
 ### 首次启动的行为
 
-启动后立即同步一次，默认每 30 分钟再同步。首次同步通常需要几分钟，取决于作品和讨论数量。首次发现的旧评价、帖子和回复作为历史基线保存，默认不会推送旧内容。
-
-`config.toml` 中可以调整间隔、每页扫描预算、是否采集回复、图片缓存、初始厂商和默认官网。已有厂商的开关与推送会话保存在数据库中；重启不会被配置文件覆盖。配置文件修改后执行：
-
-```sh
-docker compose up -d --force-recreate
-```
+启动后会立即同步一次，之后默认每 30 分钟同步一次，首次同步通常需要几分钟。首次发现的旧评价、帖子和回复会作为历史基线保存，不会推送这些旧内容。已有厂商的开关与推送会话保存在数据库中，重启时不会被配置文件覆盖。
 
 ## 后台与自动生成
 
@@ -88,9 +144,9 @@ curl -H "Authorization: Bearer $MONITOR_API_TOKEN" \
 若需要先通过 AstrBot 定时发送事实简报：
 
 1. 使用支持 HTTP API 的 AstrBot（官方文档为 v4.18.0 起），创建具有 IM 消息发送权限的 API Key。
-2. 在 `.env` 中填写 `ASTRBOT_BASE_URL` 和 `ASTRBOT_API_KEY`。容器里的 `127.0.0.1` 指本容器；AstrBot 在同机其他容器时，请使用可达的容器服务名或网关地址。
+2. 在 `/etc/taptap-monitor.env`（Docker 方式为 `.env`）中填写 `ASTRBOT_BASE_URL` 和 `ASTRBOT_API_KEY`。容器里的 `127.0.0.1` 指本容器；AstrBot 在同机其他容器时，请使用可达的容器服务名或网关地址。
 3. 在后台填写厂商的 `target_umo`，它是 AstrBot 的目标会话标识。
-4. 将 `config.toml` 的 `[digest] enabled` 设为 `true`，重建容器。默认间隔为 24 小时，自该厂商添加时间计算；简报时间标记为 UTC。
+4. 在后台「系统设置」开启简报推送（或将 `config.toml` 的 `[digest] enabled` 设为 `true` 后重启）。默认间隔为 24 小时，自该厂商添加时间计算；简报时间标记为 UTC。
 
 发送通过 `/api/v1/im/message`。发送记录和分段进度持久化，失败自动重试，整批成功后才推进游标；没有新增内容时不发送。网络超时可能发生“对方收到但本地没有收到确认”，因此采用至少一次投递，极端情况下可能重复一段。第一次连接时请在目标平台确认是否允许主动发消息。
 
@@ -115,6 +171,11 @@ curl -H "Authorization: Bearer $MONITOR_API_TOKEN" \
 | `PUT/DELETE /api/sites/{id}/logo` | 上传二进制图标/恢复自动图标 |
 | `PATCH /api/sites/{id}/games/{app_id}` | 作品展示配置 |
 | `PUT /api/site-default/{id}` | 设置默认官网 |
+| `GET /api/stats`、`GET /api/items/search` | 后台概览统计与反馈检索 |
+| `GET/PATCH /api/settings` | 运行参数 |
+| `GET /api/system` | 版本与升级状态 |
+| `POST /api/system/check`、`POST /api/system/upgrade` | 请求检查更新、升级/回滚（`{"ref": "latest"}` 或提交号） |
+| `PUT /api/system/auto` | 开关自动升级 |
 | `GET /api/openapi.json` | 带鉴权的完整接口描述 |
 
 ## 本地开发与检查
@@ -128,6 +189,7 @@ python -m venv .venv
 python -m pip install --require-hashes -r requirements.lock
 python -m pip install pytest
 python scripts/init_env.py
+cp config.example.toml config.toml   # Windows: copy config.example.toml config.toml
 # 将 .env 的 MONITOR_API_TOKEN 设置为当前终端环境变量后运行
 python -m taptap_monitor serve
 ```
@@ -146,18 +208,16 @@ node --check website/dist/admin.js
 
 `collect` 在部分数据受限或失败时返回退出码 1，但已获取的数据仍会保存，详情可查看运行记录。页面无构建步骤，无需安装 Node 依赖；Node 只用于可选的 JavaScript 语法检查。
 
-## 备份与更新
+## 备份
 
-使用 SQLite 在线备份，不直接复制正在使用的数据库文件：
+一键安装方式下，每次升级前都会自动备份。需要手动备份时，可以使用 SQLite 在线备份，不要直接复制正在使用的数据库文件：
 
 ```sh
-docker compose exec monitor python -m taptap_monitor backup --output /app/data/backup-20261105.sqlite3
-docker compose cp monitor:/app/data/backup-20261105.sqlite3 ./backup-20261105.sqlite3
+sudo -u taptap-monitor /opt/taptap-monitor/venv/bin/python -m taptap_monitor backup   --output /opt/taptap-monitor/backups/manual-$(date +%Y%m%d).sqlite3
+# Docker：docker compose exec monitor python -m taptap_monitor backup --output /app/data/backup.sqlite3
 ```
 
-备份命令要求目标文件尚不存在。图片缓存可通过数据卷另行备份。当前版本保留全部历史，不自动删除记录。
-
-更新项目文件后运行 `docker compose up -d --build`，保留原数据卷和 `.env`。`docker compose down` 不会删除命名数据卷；不要使用 `down -v`，除非确实要清空数据。
+备份命令要求目标文件尚不存在。系统会保留全部历史记录，不会自动删除。
 
 ## 目录
 
@@ -165,7 +225,8 @@ docker compose cp monitor:/app/data/backup-20261105.sqlite3 ./backup-20261105.sq
 taptap_monitor/   采集、数据库、API、官网生成和投递
 website/dist/    官网模板与管理后台，无构建依赖
 tests/           离线行为测试
-scripts/         部署与初始化脚本
-config.toml      采集与部署配置、初始监测对象
+scripts/         install.sh 一键安装、updater.py 在线升级、Docker 部署脚本
+deploy/          systemd 单元与 nginx 配置示例
+config.example.toml  配置模板（复制为 config.toml 使用）
 requirements.lock  Python 3.12 运行依赖与校验哈希
 ```

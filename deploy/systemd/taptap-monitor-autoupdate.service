@@ -1,0 +1,9 @@
+[Unit]
+Description=TaptapMonitor - daily update check (upgrades only when enabled in the admin console)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/taptap-monitor/taptap-monitor/scripts/updater.py auto
+TimeoutStartSec=30min

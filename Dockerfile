@@ -6,7 +6,7 @@ COPY requirements.lock ./
 COPY taptap_monitor ./taptap_monitor
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock && useradd --uid 10001 --create-home monitor \
     && mkdir /app/data && chown monitor:monitor /app/data
-COPY config.toml ./
+COPY config.example.toml ./config.toml
 COPY website/dist ./website/dist
 USER monitor
 EXPOSE 8080

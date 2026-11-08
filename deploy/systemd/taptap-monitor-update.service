@@ -1,0 +1,8 @@
+[Unit]
+Description=TaptapMonitor - apply update requests from the admin console
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/taptap-monitor/taptap-monitor/scripts/updater.py request
+TimeoutStartSec=30min

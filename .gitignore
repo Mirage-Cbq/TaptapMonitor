@@ -11,3 +11,5 @@ config.local.toml
 *.zip
 .playwright-cli/
 VERSION.json
+config.toml
+release/

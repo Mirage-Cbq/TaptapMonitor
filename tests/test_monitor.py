@@ -1,10 +1,12 @@
 import asyncio
 from dataclasses import replace
 import json
+import os
 import re
 import time
 from types import SimpleNamespace
 from io import BytesIO
+from pathlib import Path
 from PIL import Image
 
 from fastapi.testclient import TestClient
@@ -604,44 +606,76 @@ def test_public_page_og_image_and_json_ld_escaping(store, settings):
         assert client.get('/studio/383549/games/100').status_code == 404
 
 
-def test_system_upgrade_via_github(settings):
-    settings.upgrade_repo, settings.github_token = 'owner/repo', 'test-github-token'
-    calls = []
-
-    def github(request):
-        calls.append(request)
-        assert request.headers['Authorization'] == 'Bearer test-github-token'
-        path = request.url.path
-        if path == '/repos/owner/repo/commits/main':
-            return httpx.Response(200, json={'sha': 'a' * 40, 'commit': {'message': '新版本\n\n详情', 'committer': {'date': '2026-11-08T00:00:00Z'}}})
-        if path.endswith('/workflows/deploy.yml/runs'):
-            return httpx.Response(200, json={'workflow_runs': [{'id': 1, 'status': 'completed', 'conclusion': 'success', 'head_sha': 'b' * 40, 'secret': 'x'}]})
-        if path.endswith('/workflows/deploy.yml/dispatches'):
-            return httpx.Response(204)
-        return httpx.Response(404)
-
-    with TestClient(create_app(settings, scheduler_enabled=False, github_transport=httpx.MockTransport(github))) as client:
+def test_system_upgrade_requires_installed_updater(settings):
+    with TestClient(create_app(settings, scheduler_enabled=False)) as client:
         headers = {'Authorization': 'Bearer ' + settings.api_token}
         assert client.get('/api/system').status_code == 401
         info = client.get('/api/system', headers=headers).json()
-        assert info['upgrade_configured'] is True and info['repo'] == 'owner/repo'
-        updates = client.get('/api/system/updates', headers=headers).json()
-        assert updates['latest'] == {'commit': 'a' * 40, 'message': '新版本', 'date': '2026-11-08T00:00:00Z'}
-        assert updates['runs'][0]['conclusion'] == 'success' and 'secret' not in updates['runs'][0]
-        assert client.post('/api/system/upgrade', headers=headers, json={'ref': 'b' * 7}).status_code == 202
-        assert json.loads(calls[-1].content) == {'ref': 'main', 'inputs': {'ref': 'b' * 7}}
-        for bad in ('main; rm -rf', '../x', 'v1.0'):
-            assert client.post('/api/system/upgrade', headers=headers, json={'ref': bad}).status_code == 422
+        assert info['installed'] is False and info['auto'] is False
+        for method, path, body in (('post', '/api/system/check', None), ('post', '/api/system/upgrade', {}),
+                                   ('put', '/api/system/auto', {'enabled': True})):
+            response = client.request(method.upper(), path, headers=headers, json=body)
+            assert response.status_code == 409 and 'install.sh' in response.json()['detail']
+    assert not (Path(settings.database).parent / 'upgrade' / 'request.json').exists()
 
 
-def test_system_upgrade_unconfigured_and_github_errors(settings):
+def test_system_upgrade_writes_requests_for_local_updater(settings):
+    state = Path(settings.database).parent / 'upgrade'
+    state.mkdir()
+    (state / 'status.json').write_text(json.dumps({
+        'state': 'idle', 'result': 'checked', 'current': {'commit': 'a' * 40},
+        'latest': {'commit': 'b' * 40}, 'behind': [{'commit': 'b' * 40, 'message': '新版本'}]}), encoding='utf-8')
     with TestClient(create_app(settings, scheduler_enabled=False)) as client:
         headers = {'Authorization': 'Bearer ' + settings.api_token}
-        assert client.get('/api/system', headers=headers).json()['upgrade_configured'] is False
-        response = client.post('/api/system/upgrade', headers=headers, json={})
-        assert response.status_code == 502 and '未配置' in response.json()['detail']
-    settings.upgrade_repo, settings.github_token = 'owner/repo', 'bad'
-    app = create_app(settings, scheduler_enabled=False, github_transport=httpx.MockTransport(lambda r: httpx.Response(401)))
-    with TestClient(app) as client:
-        response = client.get('/api/system/updates', headers={'Authorization': 'Bearer ' + settings.api_token})
-        assert response.status_code == 502 and '令牌' in response.json()['detail']
+        info = client.get('/api/system', headers=headers).json()
+        assert info['installed'] is True and info['behind'][0]['message'] == '新版本' and info['pending'] is False
+        assert client.post('/api/system/check', headers=headers).status_code == 202
+        assert json.loads((state / 'request.json').read_text(encoding='utf-8')) == {'action': 'check', 'ref': 'latest'}
+        response = client.post('/api/system/upgrade', headers=headers, json={'ref': 'c' * 7})
+        assert response.status_code == 202 and response.json()['pending'] is True
+        assert json.loads((state / 'request.json').read_text(encoding='utf-8')) == {'action': 'apply', 'ref': 'c' * 7}
+        for bad in ('main; rm -rf', '../x', 'v1.0', 'main'):
+            assert client.post('/api/system/upgrade', headers=headers, json={'ref': bad}).status_code == 422
+        assert client.put('/api/system/auto', headers=headers, json={'enabled': True}).json()['auto'] is True
+        assert json.loads((state / 'auto.json').read_text(encoding='utf-8')) == {'enabled': True}
+        (state / 'status.json').write_text(json.dumps({'state': 'updating'}), encoding='utf-8')
+        response = client.post('/api/system/check', headers=headers)
+        assert response.status_code == 409 and '正在进行' in response.json()['detail']
+
+
+@pytest.mark.skipif(os.name == 'nt', reason='the updater targets Linux servers')
+def test_updater_checks_and_rejects_foreign_commits(tmp_path):
+    import getpass
+    import subprocess
+    import sys
+
+    def git(cwd, *args):
+        return subprocess.run(['git', '-C', str(cwd), *args], check=True, capture_output=True, text=True).stdout.strip()
+
+    upstream, app = tmp_path / 'upstream', tmp_path / 'app'
+    subprocess.run(['git', 'init', '-q', '-b', 'main', str(upstream)], check=True)
+    for name in ('first', 'second'):
+        (upstream / 'file.txt').write_text(name, encoding='utf-8')
+        git(upstream, 'add', '.')
+        git(upstream, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-qm', f'{name} release')
+    subprocess.run(['git', 'clone', '-q', str(upstream), str(app)], check=True)
+    git(app, 'reset', '-q', '--hard', 'HEAD~1')
+    git(app, '-c', 'user.name=t', '-c', 'user.email=t@example.com', 'commit', '-q', '--allow-empty', '-m', 'local only')
+    foreign = git(app, 'rev-parse', 'HEAD')
+    env = {**os.environ, 'TAPTAP_APP_DIR': str(app), 'TAPTAP_USER': getpass.getuser(), 'TAPTAP_LOCK': str(tmp_path / 'lock')}
+    updater = [sys.executable, str(Path(__file__).resolve().parent.parent / 'scripts' / 'updater.py')]
+    status_file = app / 'data' / 'upgrade' / 'status.json'
+
+    assert subprocess.run([*updater, 'check'], env=env, capture_output=True).returncode == 0
+    status = json.loads(status_file.read_text(encoding='utf-8'))
+    assert status['result'] == 'checked' and [c['message'] for c in status['behind']] == ['second release']
+    assert status['latest']['message'] == 'second release' and (app / 'VERSION.json').exists()
+
+    assert subprocess.run([*updater, 'apply', '--ref', foreign], env=env, capture_output=True).returncode == 1
+    status = json.loads(status_file.read_text(encoding='utf-8'))
+    assert status['result'] == 'failed' and '官方分支' in status['message'] and git(app, 'rev-parse', 'HEAD') == foreign
+
+    (app / 'data' / 'upgrade' / 'request.json').write_text('{"action": "apply", "ref": "main; id"}', encoding='utf-8')
+    assert subprocess.run([*updater, 'request'], env=env, capture_output=True).returncode == 1
+    assert not (app / 'data' / 'upgrade' / 'request.json').exists()
+    assert json.loads(status_file.read_text(encoding='utf-8'))['message'] == '无效的升级请求'

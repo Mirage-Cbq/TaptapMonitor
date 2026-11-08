@@ -40,10 +40,6 @@ class Settings:
     astrbot_key: str = ""
     api_token: str = ""
     site_developer_id: int | None = None
-    upgrade_repo: str = ""
-    upgrade_workflow: str = "deploy.yml"
-    upgrade_branch: str = "main"
-    github_token: str = ""
 
     @classmethod
     def load(cls, path: str = "config.toml"):
@@ -61,10 +57,6 @@ class Settings:
             astrbot_key=os.environ.get("ASTRBOT_API_KEY", ""),
             api_token=os.environ.get("MONITOR_API_TOKEN", ""),
             site_developer_id=data.get("site", {}).get("primary_developer_id"),
-            upgrade_repo=data.get("upgrade", {}).get("repo", ""),
-            upgrade_workflow=data.get("upgrade", {}).get("workflow", "deploy.yml"),
-            upgrade_branch=data.get("upgrade", {}).get("branch", "main"),
-            github_token=os.environ.get("GITHUB_TOKEN", ""),
         )
         RuntimeUpdate(**{key: getattr(settings, key) for key in RUNTIME_FIELDS})
         if any(getattr(settings, key) is None for key in RUNTIME_FIELDS):

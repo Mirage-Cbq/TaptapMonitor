@@ -5,6 +5,7 @@ if ! docker compose version >/dev/null 2>&1; then
   echo "Docker Engine and Docker Compose v2 are required."
   exit 1
 fi
+[ -f config.toml ] || { cp config.example.toml config.toml; echo "Created config.toml from config.example.toml."; }
 if [ ! -f .env ]; then
   umask 077
   monitor_token=$(openssl rand -hex 32)

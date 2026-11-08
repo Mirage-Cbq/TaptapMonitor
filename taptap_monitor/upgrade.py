@@ -1,75 +1,60 @@
-"""System upgrades driven by the GitHub Actions deploy workflow.
+"""Admin-console side of the pull-based updater (scripts/updater.py).
 
-The server never pulls code itself: the admin console asks GitHub to run the
-deploy workflow, which tests the chosen commit and pushes it to this server.
+The web service runs unprivileged, so it never touches git or systemd itself:
+it writes a request file into data/upgrade/, which a root systemd path unit
+picks up, and reads the updater's status.json back.
 """
 import json
+import os
 from pathlib import Path
 import re
 
-import httpx
-
-API = "https://api.github.com"
-REF_PATTERN = re.compile(r"^(main|[0-9a-f]{7,40})$")
+REF_PATTERN = re.compile(r"^(latest|[0-9a-f]{7,40})$")
 
 
 class UpgradeError(Exception):
     pass
 
 
-def current_version(root: Path) -> dict | None:
-    """VERSION.json is written by the deploy workflow next to the code."""
+def _read(path: Path):
     try:
-        data = json.loads((root / "VERSION.json").read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return {key: data.get(key) for key in ("commit", "message", "date", "deployed_at", "run_url")}
 
 
-class GitHub:
-    def __init__(self, repo: str, workflow: str, branch: str, token: str, transport=None):
-        self.repo, self.workflow, self.branch, self.token = repo, workflow, branch, token
-        self.http = httpx.AsyncClient(base_url=API, timeout=15, transport=transport, headers={
-            "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "TaptapMonitor", **({"Authorization": f"Bearer {token}"} if token else {}),
-        })
+def current_version(root: Path) -> dict | None:
+    data = _read(root / "VERSION.json")
+    return {key: data.get(key) for key in ("commit", "message", "date", "deployed_at")} if isinstance(data, dict) else None
+
+
+class Updater:
+    def __init__(self, data_dir: Path, code_root: Path):
+        self.state, self.code_root = data_dir / "upgrade", code_root
 
     @property
-    def configured(self) -> bool:
-        return bool(self.repo and self.token)
+    def installed(self) -> bool:
+        return (self.state / "status.json").exists()
 
-    async def close(self):
-        await self.http.aclose()
+    def status(self) -> dict:
+        status = _read(self.state / "status.json") or {}
+        auto = _read(self.state / "auto.json") or {}
+        return {**status, "installed": self.installed, "version": current_version(self.code_root),
+                "auto": bool(auto.get("enabled")), "pending": (self.state / "request.json").exists()}
 
-    async def _request(self, method, path, **kwargs):
-        if not self.configured:
-            raise UpgradeError("未配置 GitHub 仓库或访问令牌")
-        try:
-            response = await self.http.request(method, path, **kwargs)
-        except httpx.HTTPError as exc:
-            raise UpgradeError("无法连接 GitHub，请稍后重试") from exc
-        if response.status_code in (401, 403):
-            raise UpgradeError("GitHub 令牌无效或权限不足")
-        if response.status_code == 404:
-            raise UpgradeError("找不到 GitHub 仓库或部署流程")
-        if response.status_code >= 400:
-            raise UpgradeError(f"GitHub 返回错误 {response.status_code}")
-        return response
+    def _write(self, name: str, data: dict):
+        if not self.installed:
+            raise UpgradeError("服务器尚未安装更新服务，请在服务器上运行 scripts/install.sh")
+        temporary = self.state / f".{name}.tmp"
+        temporary.write_text(json.dumps(data), encoding="utf-8")
+        os.replace(temporary, self.state / name)
 
-    async def latest(self) -> dict:
-        commit = (await self._request("GET", f"/repos/{self.repo}/commits/{self.branch}")).json()
-        runs = (await self._request("GET", f"/repos/{self.repo}/actions/workflows/{self.workflow}/runs",
-                                    params={"per_page": 10})).json().get("workflow_runs", [])
-        return {
-            "latest": {"commit": commit["sha"], "message": commit["commit"]["message"].split("\n")[0],
-                       "date": commit["commit"]["committer"]["date"]},
-            "runs": [{key: run.get(key) for key in ("id", "status", "conclusion", "head_sha", "created_at",
-                                                     "updated_at", "html_url", "event", "display_title")}
-                     for run in runs],
-        }
+    def request(self, action: str, ref: str = "latest"):
+        if action not in ("check", "apply") or not REF_PATTERN.fullmatch(ref):
+            raise UpgradeError("无效的升级请求")
+        if self.status().get("state") in ("checking", "updating"):
+            raise UpgradeError("已有升级任务正在进行")
+        self._write("request.json", {"action": action, "ref": ref})
 
-    async def dispatch(self, ref: str):
-        if not REF_PATTERN.fullmatch(ref):
-            raise UpgradeError("版本号格式不正确")
-        await self._request("POST", f"/repos/{self.repo}/actions/workflows/{self.workflow}/dispatches",
-                            json={"ref": self.branch, "inputs": {"ref": ref}})
+    def set_auto(self, enabled: bool):
+        self._write("auto.json", {"enabled": bool(enabled)})
