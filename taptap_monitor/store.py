@@ -1,3 +1,4 @@
+import datetime
 from contextlib import contextmanager
 from datetime import date, timedelta
 import json
@@ -6,6 +7,23 @@ import sqlite3
 import time
 
 from .content import Item
+
+
+def _figure(value):
+    try:
+        number = float(str(value).replace(",", ""))
+    except (TypeError, ValueError):
+        return None
+    return int(number) if number.is_integer() else number
+
+
+def public_snapshot(stat):
+    """Daily figures any visitor can see on the game page; recorded so trends exist without login."""
+    rating = stat.get("rating") or {}
+    snapshot = {key: _figure(stat.get(key)) for key in ("review_count", "topic_count", "fans_count", "hits_total", "reserve_count", "download_count")}
+    snapshot["rating"] = _figure(rating.get("score"))
+    snapshot["votes"] = {str(star): _figure((stat.get("vote_info") or {}).get(str(star))) or 0 for star in range(1, 6)}
+    return {key: value for key, value in snapshot.items() if value is not None}
 
 
 class Store:
@@ -67,6 +85,15 @@ class Store:
                     error TEXT NOT NULL DEFAULT '', sent_parts INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(developer_id, from_cursor, to_cursor)
                 );
+                CREATE TABLE IF NOT EXISTS metrics (
+                    app_id INTEGER NOT NULL, source TEXT NOT NULL, day TEXT NOT NULL,
+                    data TEXT NOT NULL, captured_at REAL NOT NULL,
+                    PRIMARY KEY (app_id, source, day)
+                );
+                CREATE TABLE IF NOT EXISTS official_reports (
+                    app_id INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, fetched_at REAL NOT NULL,
+                    PRIMARY KEY (app_id, kind)
+                );
             """)
 
     @contextmanager
@@ -121,6 +148,34 @@ class Store:
                 group_id=COALESCE(excluded.group_id,games.group_id), metadata=excluded.metadata, updated_at=excluded.updated_at""",
                 (app["id"], app["title"], group_id, json.dumps(metadata, ensure_ascii=False), time.time()))
             db.execute("INSERT OR IGNORE INTO developer_games VALUES(?,?)", (developer_id, app["id"]))
+        if isinstance(app.get("stat"), dict):
+            self.save_metrics(app["id"], "public", public_snapshot(app["stat"]))
+
+    def save_metrics(self, app_id, source, data, day=None):
+        """Merge one day's figures for a game; source is 'public' (anonymous) or 'official' (open API)."""
+        day = day or datetime.date.today().isoformat()
+        with self.connect() as db:
+            row = db.execute("SELECT data FROM metrics WHERE app_id=? AND source=? AND day=?", (app_id, source, day)).fetchone()
+            merged = {**(json.loads(row[0]) if row else {}), **data}
+            db.execute("INSERT INTO metrics VALUES(?,?,?,?,?) ON CONFLICT(app_id,source,day) DO UPDATE SET data=excluded.data,captured_at=excluded.captured_at",
+                       (app_id, source, day, json.dumps(merged, ensure_ascii=False), time.time()))
+
+    def metrics(self, app_ids, source, since=None):
+        if not app_ids:
+            return []
+        marks = ",".join("?" * len(app_ids))
+        rows = self.query(f"SELECT app_id,day,data FROM metrics WHERE source=? AND app_id IN ({marks}) AND day>=? ORDER BY day",
+                          (source, *app_ids, since or ""))
+        return [{"app_id": row["app_id"], "day": row["day"], **json.loads(row["data"])} for row in rows]
+
+    def save_report(self, app_id, kind, payload):
+        with self.connect() as db:
+            db.execute("INSERT INTO official_reports VALUES(?,?,?,?) ON CONFLICT(app_id,kind) DO UPDATE SET payload=excluded.payload,fetched_at=excluded.fetched_at",
+                       (app_id, kind, json.dumps(payload, ensure_ascii=False), time.time()))
+
+    def reports(self, app_id):
+        return {row["kind"]: {"data": json.loads(row["payload"]), "fetched_at": row["fetched_at"]}
+                for row in self.query("SELECT * FROM official_reports WHERE app_id=?", (app_id,))}
 
     def save_profile(self, developer_id, profile):
         source = {k: profile[k] for k in ("name", "intro", "avatar", "website") if k in profile}

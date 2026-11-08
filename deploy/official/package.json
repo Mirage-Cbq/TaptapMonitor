@@ -1,0 +1,8 @@
+{
+  "name": "taptap-monitor-official",
+  "private": true,
+  "description": "Pinned official TapTap open API MCP server used by TaptapMonitor",
+  "dependencies": {
+    "@taptap/instant-games-open-mcp": "1.24.14"
+  }
+}
