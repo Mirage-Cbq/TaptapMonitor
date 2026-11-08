@@ -422,6 +422,71 @@
     catch(error) {error.details?.forEach(detail=>{const key=detail.loc[detail.loc.length-1], node=$('#error-'+key); if (node) {node.textContent='数值不符合要求，请按说明填写。'; node.hidden=false; $('#setting-'+key).setAttribute('aria-invalid','true');}}); throw error;}
   }
 
+  /* ---------- 系统升级 ---------- */
+  const runState=run=>run.status!=='completed'?['running',run.status==='queued'?'排队中':'部署中']:run.conclusion==='success'?['ok','成功']:run.conclusion==='cancelled'?['interrupted','已取消']:['error','失败'];
+  const short=sha=>(sha || '').slice(0,7);
+  let upgradeTarget=null, upgradeTimer=null, upgradeStarted=0;
+  function versionBox(label, version, className='') {
+    const box=el('div','version-box '+className); box.append(el('span','label',label));
+    if (!version) {box.append(el('span','muted','未知（尚未通过自动部署发布）')); return box;}
+    box.append(el('span','sha',short(version.commit)),el('span','msg',version.message || ''),el('span','muted small',`提交于 ${new Date(version.date).toLocaleString('zh-CN',{hour12:false})}`+(version.deployed_at?` · 部署于 ${new Date(version.deployed_at).toLocaleString('zh-CN',{hour12:false})}`:'')));
+    return box;
+  }
+  async function dispatchUpgrade(ref, label) {
+    if (!confirm(`确定${label}吗？\n\n部署期间服务会重启约 10–30 秒，升级前会自动备份数据库。`)) return;
+    await api('system/upgrade','POST',{ref}); upgradeTarget=ref; upgradeStarted=Date.now();
+    notify(`已提交${label}请求，GitHub 正在测试并部署，通常需要 1–3 分钟。`); await loadUpgrade(); watchUpgrade();
+  }
+  function watchUpgrade() {
+    clearTimeout(upgradeTimer);
+    upgradeTimer=setTimeout(async()=>{
+      if (!upgradeTarget) return;
+      try {
+        const info=await api('system');
+        if (info.version?.commit && (upgradeTarget==='main' ? false : info.version.commit.startsWith(upgradeTarget))) {upgradeTarget=null; notify('升级完成，系统已运行新版本。'); await loadUpgrade(); return;}
+        if (view==='settings') await loadUpgrade(true);
+      } catch {$('#upgrade-progress') && ($('#upgrade-progress').textContent='服务正在重启，稍候自动重连…');}
+      if (Date.now()-upgradeStarted>10*60*1000) {upgradeTarget=null; notify('升级等待超时，请在 GitHub Actions 查看部署日志。'); return;}
+      watchUpgrade();
+    },6000);
+  }
+  async function loadUpgrade(quiet=false) {
+    const body=$('#upgrade-body'); if (!quiet) body.replaceChildren(el('p','muted','正在读取版本信息…'));
+    const info=await api('system');
+    if (!info.upgrade_configured) {
+      const steps=el('ol','setup-steps');
+      [['在 GitHub 创建仓库级 fine-grained 令牌，仓库选择 ',info.repo || '项目仓库','，权限：Actions 读写、Contents 只读。'],
+       ['在服务器 ','/etc/taptap-monitor.env',' 中添加一行 GITHUB_TOKEN=令牌。'],['执行 ','systemctl restart taptap-monitor',' 后刷新本页。']].forEach(([a,code,b])=>{const li=el('li'); li.append(a,el('code','',code),b); steps.append(li);});
+      const grid=el('div','version-grid'); grid.append(versionBox('当前运行版本',info.version));
+      body.replaceChildren(grid,el('p','muted','后台升级尚未启用。推送到 GitHub main 分支仍会自动部署；如需在此一键升级或回滚：'),steps); return;
+    }
+    let updates;
+    try {updates=await api('system/updates');}
+    catch(error) {const grid=el('div','version-grid'); grid.append(versionBox('当前运行版本',info.version)); body.replaceChildren(grid,el('p','error',error.message)); return;}
+    const current=updates.version, latest=updates.latest, behind=!current || current.commit!==latest.commit;
+    const grid=el('div','version-grid'); grid.append(versionBox('当前运行版本',current),versionBox(behind?'GitHub 最新版本（可升级）':'GitHub 最新版本',latest,behind?'new':''));
+    const nodes=[grid];
+    const active=updates.runs.find(run=>run.status!=='completed');
+    if (active || upgradeTarget) nodes.push(el('p','upgrade-progress',active?`${runState(active)[1]}：${active.display_title || short(active.head_sha)}`:'正在等待 GitHub 开始部署…'));
+    if (active) nodes[nodes.length-1].id='upgrade-progress';
+    const actions=el('div','actions');
+    if (behind && !active) actions.append(button(`升级到最新版 ${short(latest.commit)}`,()=>dispatchUpgrade(latest.commit,`升级到 ${short(latest.commit)}`),'primary'));
+    else if (!active) actions.append(el('span','chip ok','已是最新版本'));
+    nodes.push(actions);
+    if (updates.runs.length) {
+      const list=el('div','deploy-runs'); list.append(el('h3','small muted','最近部署'));
+      updates.runs.slice(0,8).forEach(run=>{
+        const [cls,text]=runState(run), row=el('div','deploy-run'), title=el('span','title',run.display_title || '部署');
+        row.append(el('span','chip '+cls,text),title,el('code','',`${short(run.head_sha)} · ${ago(Date.parse(run.created_at)/1000)}`));
+        const ops=el('div','actions'); ops.append(link('日志',run.html_url,'link'));
+        if (run.conclusion==='success' && current && run.head_sha!==current.commit && !active) ops.append(button('回滚到此版本',()=>dispatchUpgrade(run.head_sha,`回滚到 ${short(run.head_sha)}`),'ghost'));
+        row.append(ops); list.append(row);
+      });
+      nodes.push(list);
+    }
+    body.replaceChildren(...nodes);
+  }
+
   /* ---------- 路由与事件 ---------- */
   async function route(focus=false) {
     view=location.hash.replace(/^#\//,'').split('/')[0]; if (!views[view]) {location.hash='#/overview'; return;}
@@ -433,7 +498,7 @@
     if (view==='data') await loadFeedback();
     if (view==='developers') {await loadCatalog(); if (!developerId && developers.length) developerId=developers[0].id; renderDevelopers(); if (developerId) await loadSite();}
     if (view==='runs') await loadRuns();
-    if (view==='settings') await loadSettings();
+    if (view==='settings') {await loadSettings(); await loadUpgrade();}
   }
   async function connect() {
     await loadCatalog(); sessionStorage.setItem('monitor-token',token);
@@ -473,6 +538,7 @@
   $('#reset-logo').addEventListener('click',guarded(async()=>{await api(`sites/${developerId}/logo`,'DELETE'); await loadCatalog(); await loadSite(); renderDevelopers(); notify('已恢复使用 TapTap 厂商图标。');}));
   $('#set-primary').addEventListener('click',guarded(async()=>{await api('site-default/'+developerId,'PUT'); await loadSite(); notify('默认官网已更新。');}));
   $('#refresh-runs').addEventListener('click',guarded(()=>loadRuns()));
+  $('#check-updates').addEventListener('click',guarded(()=>loadUpgrade()));
   $('#runtime-form').addEventListener('submit',guarded(async()=>{const save=$('#runtime-form button.primary'); save.disabled=true; try {await saveSettings();} finally {save.disabled=false;}}));
   window.addEventListener('hashchange',guarded(()=>route(true)));
   let resizeTimer;

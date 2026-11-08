@@ -150,6 +150,7 @@
           <div id="runtime-fields" class="settings-groups"></div>
           <div class="save-bar"><span id="settings-message" role="status" class="muted"></span><button class="primary">保存设置</button></div>
         </form>
+        <section class="card" id="upgrade-card"><div class="card-head"><div><h2>系统升级</h2><p class="muted small">由 GitHub Actions 先测试再部署；升级前自动备份数据库，健康检查失败会自动回滚。</p></div><button id="check-updates" type="button"><svg><use href="#i-sync"/></svg>检查更新</button></div><div id="upgrade-body" class="upgrade-body"></div></section>
         <section class="card"><div class="card-head"><h2>系统信息</h2></div><dl id="system-info" class="system-info"></dl></section>
       </section>
     </main>

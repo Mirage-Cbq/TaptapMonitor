@@ -23,6 +23,13 @@ batch_size = 100
 base_url = ""
 # API key comes from ASTRBOT_API_KEY, never from this file.
 
+[upgrade]
+# 后台“系统升级”通过此仓库的 GitHub Actions 部署流程更新服务器。
+# 访问令牌来自环境变量 GITHUB_TOKEN（仓库级 fine-grained token：Actions 读写、Contents 只读）。
+repo = "Mirage-Cbq/TaptapMonitor"
+workflow = "deploy.yml"
+branch = "main"
+
 [site]
 primary_developer_id = 383549
 

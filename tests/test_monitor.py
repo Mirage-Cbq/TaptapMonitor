@@ -602,3 +602,46 @@ def test_public_page_og_image_and_json_ld_escaping(store, settings):
         assert '作品正在准备中' in empty.text
         assert json.loads(re.search(r'<script type="application/ld\+json">(.*?)</script>', empty.text, re.S)[1])['@graph'][1]['numberOfItems'] == 0
         assert client.get('/studio/383549/games/100').status_code == 404
+
+
+def test_system_upgrade_via_github(settings):
+    settings.upgrade_repo, settings.github_token = 'owner/repo', 'test-github-token'
+    calls = []
+
+    def github(request):
+        calls.append(request)
+        assert request.headers['Authorization'] == 'Bearer test-github-token'
+        path = request.url.path
+        if path == '/repos/owner/repo/commits/main':
+            return httpx.Response(200, json={'sha': 'a' * 40, 'commit': {'message': '新版本\n\n详情', 'committer': {'date': '2026-11-08T00:00:00Z'}}})
+        if path.endswith('/workflows/deploy.yml/runs'):
+            return httpx.Response(200, json={'workflow_runs': [{'id': 1, 'status': 'completed', 'conclusion': 'success', 'head_sha': 'b' * 40, 'secret': 'x'}]})
+        if path.endswith('/workflows/deploy.yml/dispatches'):
+            return httpx.Response(204)
+        return httpx.Response(404)
+
+    with TestClient(create_app(settings, scheduler_enabled=False, github_transport=httpx.MockTransport(github))) as client:
+        headers = {'Authorization': 'Bearer ' + settings.api_token}
+        assert client.get('/api/system').status_code == 401
+        info = client.get('/api/system', headers=headers).json()
+        assert info['upgrade_configured'] is True and info['repo'] == 'owner/repo'
+        updates = client.get('/api/system/updates', headers=headers).json()
+        assert updates['latest'] == {'commit': 'a' * 40, 'message': '新版本', 'date': '2026-11-08T00:00:00Z'}
+        assert updates['runs'][0]['conclusion'] == 'success' and 'secret' not in updates['runs'][0]
+        assert client.post('/api/system/upgrade', headers=headers, json={'ref': 'b' * 7}).status_code == 202
+        assert json.loads(calls[-1].content) == {'ref': 'main', 'inputs': {'ref': 'b' * 7}}
+        for bad in ('main; rm -rf', '../x', 'v1.0'):
+            assert client.post('/api/system/upgrade', headers=headers, json={'ref': bad}).status_code == 422
+
+
+def test_system_upgrade_unconfigured_and_github_errors(settings):
+    with TestClient(create_app(settings, scheduler_enabled=False)) as client:
+        headers = {'Authorization': 'Bearer ' + settings.api_token}
+        assert client.get('/api/system', headers=headers).json()['upgrade_configured'] is False
+        response = client.post('/api/system/upgrade', headers=headers, json={})
+        assert response.status_code == 502 and '未配置' in response.json()['detail']
+    settings.upgrade_repo, settings.github_token = 'owner/repo', 'bad'
+    app = create_app(settings, scheduler_enabled=False, github_transport=httpx.MockTransport(lambda r: httpx.Response(401)))
+    with TestClient(app) as client:
+        response = client.get('/api/system/updates', headers={'Authorization': 'Bearer ' + settings.api_token})
+        assert response.status_code == 502 and '令牌' in response.json()['detail']

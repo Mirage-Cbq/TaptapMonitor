@@ -10,3 +10,4 @@ output/
 config.local.toml
 *.zip
 .playwright-cli/
+VERSION.json
