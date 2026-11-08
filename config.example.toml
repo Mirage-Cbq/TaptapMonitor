@@ -7,11 +7,12 @@ max_pages = 100
 collect_comments = true
 cache_images = true
 
-# Bootstrap entries are added only if absent. Existing subscriptions keep their settings.
-[[developers]]
-id = 383549
-name = "菜篮子工作室"
-logo = "/brand/studio-logo-transparent.png"
+# 需要监测的 TapTap 厂商。也可以留空，安装后在后台「厂商与官网」中添加。
+# 仅在厂商尚未添加时生效；已有厂商的设置以后台为准。
+# [[developers]]
+# id = 123456              # TapTap 厂商主页 https://www.taptap.cn/developer/123456 中的数字
+# name = "我的工作室"
+# logo = "/brand/my-logo.png"  # 可选：放在 website/dist/brand/ 下的图标，也可在后台上传
 
 [digest]
 # Set enabled=true and configure AstrBot + a subscription's target_umo to send.
@@ -24,5 +25,6 @@ base_url = ""
 # API key comes from ASTRBOT_API_KEY, never from this file.
 
 [site]
-primary_developer_id = 383549
+# 默认官网与后台的主要厂商；不填写时使用第一个启用的厂商，也可在后台「设为默认官网」。
+# primary_developer_id = 123456
 

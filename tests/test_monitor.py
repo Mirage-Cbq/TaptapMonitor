@@ -1277,3 +1277,11 @@ def test_insights_empty_window_and_metric_fallback(store):
     store.save_metrics(100, 'public', {'fans_count': 2, 'hits_total': 15})
     row = analyze(store, 7)['growth'][0]
     assert row['source'] == 'public' and row['fans_delta'] == 0 and row['hits_delta'] == 5 and row['days'] == 3
+
+
+def test_fresh_install_without_studios_shows_welcome_page(tmp_path):
+    settings = Settings(database=str(tmp_path / "fresh.sqlite3"), api_token="test-only-token-with-32-characters")
+    with TestClient(create_app(settings, scheduler_enabled=False)) as client:
+        response = client.get('/')
+        assert response.status_code == 200 and '还没有添加要监测的 TapTap 厂商' in response.text and 'href="/admin"' in response.text
+        assert client.get('/public/site').status_code == 404

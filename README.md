@@ -97,7 +97,7 @@ sudo python3 /opt/taptap-monitor/taptap-monitor/scripts/updater.py apply --ref 1
 | `/etc/taptap-monitor.env` | `MONITOR_API_TOKEN`，以及可选的 `ASTRBOT_BASE_URL` 和 `ASTRBOT_API_KEY` |
 | 后台「系统设置」 | 采集间隔、请求间隔与超时、翻页上限、图片缓存和简报推送。保存后立即生效，保存在数据库中 |
 
-`config.toml` 不纳入版本库，升级时不会被覆盖。仓库中只提供模板 `config.example.toml`。模板里默认监测的是[菜篮子工作室](https://www.taptap.cn/developer/383549)，你可以改成自己的厂商 ID，也可以在后台继续添加厂商。
+`config.toml` 不纳入版本库，升级时不会被覆盖。仓库中只提供模板 `config.example.toml`。模板不预置任何厂商：可以在 `config.toml` 的 `[[developers]]` 中填写厂商 ID，也可以安装后在后台「厂商与官网」中粘贴 TapTap 厂商主页链接添加，并用「设为默认官网」指定主要厂商。
 
 > **网络说明**：TapTap 网页版 `www.taptap.cn` 对部分云服务器 IP 启用了 WAF 拦截（返回 405 验证页）。本项目的数据接口改走移动版 `m.taptap.cn`，这条线路在云服务器上可以正常访问。
 
@@ -133,7 +133,7 @@ sh scripts/deploy.sh
 
 图片优先使用 TapTap 原始宣传图，采集时自动缓存到数据卷中的 `media/`，避免每次访问都请求 TapTap。图片 URL 变化会产生新的缓存文件。
 
-首屏采用纯色背景与独立的厂商图标，不使用游戏背景大图。后台可为每个厂商上传 PNG、JPEG 或 WebP 图标（最大 8 MB、每边不超过 4096 像素），上传的透明 PNG 会保留原始透明度，也可以恢复采用 TapTap 厂商图标。首次附带的菜篮子工作室图标在 `website/dist/brand/studio-logo-transparent.png`，通过 `config.toml` 的厂商 `logo` 字段初始化；后续后台修改优先，不会被重启或同步覆盖。
+首屏采用纯色背景与独立的厂商图标，不使用游戏背景大图。后台可为每个厂商上传 PNG、JPEG 或 WebP 图标（最大 8 MB、每边不超过 4096 像素），上传的透明 PNG 会保留原始透明度，也可以恢复采用 TapTap 厂商图标。也可以把图标放在 `website/dist/brand/` 下，通过 `config.toml` 的厂商 `logo` 字段初始化；后续后台修改优先，不会被重启或同步覆盖。
 
 ## 采集范围与可靠性
 
@@ -179,7 +179,7 @@ sh scripts/deploy.sh
 
 ```sh
 curl -H "Authorization: Bearer $MONITOR_API_TOKEN" \
-  'http://127.0.0.1:8080/api/digest-input?developer_id=383549&after=0&limit=100'
+  'http://127.0.0.1:8080/api/digest-input?developer_id=<厂商ID>&after=0&limit=100'
 ```
 
 返回 `counts`、带原文链接的 `events`、建议提示词、`markdown`、`next_cursor` 和 `has_more`。`has_more=true` 时继续分页。默认排除历史基线，需要回顾旧内容时传 `include_baseline=true`。这些读取接口不会修改游标，外部消费者可以各自维护进度。

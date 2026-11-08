@@ -32,6 +32,17 @@ from .insights import analyze
 
 log = logging.getLogger(__name__)
 
+# Shown on a fresh install before any studio has been added.
+WELCOME_PAGE = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TaptapMonitor</title><meta name="robots" content="noindex"><style>
+:root{color-scheme:light dark;--bg:#f4f6f5;--card:#fff;--ink:#17231c;--muted:#68766d;--accent:#1f8a6d}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1412;--card:#18201c;--ink:#e8efe9;--muted:#9aa8a0;--accent:#44c39b}}
+body{margin:0;min-height:100vh;display:grid;place-items:center;background:var(--bg);color:var(--ink);font:16px/1.7 system-ui,"PingFang SC","Microsoft YaHei",sans-serif}
+main{max-width:440px;margin:16px;padding:32px;background:var(--card);border-radius:16px;box-shadow:0 8px 24px -16px #0004}
+h1{margin:0 0 8px;font-size:22px}p{margin:0 0 20px;color:var(--muted)}
+a{display:inline-block;padding:10px 18px;border-radius:10px;background:var(--accent);color:#fff;text-decoration:none;font-weight:700}
+</style></head><body><main><h1>TaptapMonitor 已安装</h1><p>还没有添加要监测的 TapTap 厂商。进入管理后台，在「厂商与官网」中粘贴厂商主页链接即可开始，官网会根据厂商作品自动生成。</p><a href="/admin">进入管理后台</a></main></body></html>"""
+
 
 class DeveloperCreate(BaseModel):
     id: int = Field(gt=0)
@@ -495,6 +506,8 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
 
         @app.get("/", response_class=HTMLResponse)
         async def home():
+            if primary_site() is None:
+                return HTMLResponse(WELCOME_PAGE, headers={"Cache-Control": "no-cache"})
             return homepage(primary_site())
 
         @app.get("/studio/{developer_id}", response_class=HTMLResponse)
