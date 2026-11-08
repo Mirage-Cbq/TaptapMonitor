@@ -26,6 +26,7 @@ from .website import site_data
 from .lock import ProcessLock
 from .upgrade import Updater, UpgradeError
 from .media import MediaCache
+from .official import OfficialBridge, OfficialError, OfficialService
 
 log = logging.getLogger(__name__)
 
@@ -86,6 +87,7 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
     collector = Collector(store, source, settings)
     delivery = Delivery(store, settings)
     updater = Updater(Path(settings.database).resolve().parent, Path(__file__).resolve().parent.parent)
+    official = OfficialService(store, OfficialBridge(Path(settings.database).resolve().parent))
     scan_task = None
     active_run = None
     pending_developers = set()
@@ -95,7 +97,11 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
         if scan_task and not scan_task.done():
             raise HTTPException(409, "A collection run is already active")
         active_run = store.start_run(developer_id)
-        scan_task = asyncio.create_task(collector.collect(developer_id, active_run))
+        async def collect():
+            result = await collector.collect(developer_id, active_run)
+            official.sync_if_due()
+            return result
+        scan_task = asyncio.create_task(collect())
         return active_run
 
     async def schedule():
@@ -126,12 +132,16 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
                         owned.cancel()
                         with suppress(asyncio.CancelledError):
                             await owned
-                await source.close()
+                try:
+                    await source.close()
+                finally:
+                    await official.close()
 
     app = FastAPI(title="TapTap 作品监测", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store
     app.state.collector = collector
     app.state.settings = settings
+    app.state.official = official
 
     @app.middleware("http")
     async def response_headers(request, call_next):
@@ -196,6 +206,36 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
     @api.get("/games")
     async def games(developer_id: int | None = Query(None, gt=0)):
         return store.games(developer_id)
+
+    @api.get("/official")
+    async def official_status():
+        return official.status()
+
+    @api.post("/official/auth", status_code=202)
+    async def official_auth():
+        try:
+            return await official.begin_auth()
+        except OfficialError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @api.delete("/official/auth")
+    async def official_logout():
+        try:
+            return await official.logout()
+        except OfficialError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @api.post("/official/sync", status_code=202)
+    async def official_sync():
+        try:
+            return official.start_sync()
+        except OfficialError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @api.get("/metrics")
+    async def metrics(days: int = Query(30, ge=7, le=180), developer_id: int | None = Query(None, gt=0),
+                      app_id: int | None = Query(None, gt=0)):
+        return official.metrics(days, developer_id, app_id)
 
     @api.get("/items")
     async def items(developer_id: int | None = None, app_id: int | None = None,

@@ -17,6 +17,7 @@ import json
 import os
 import pwd
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -159,10 +160,39 @@ def switch(target, previous):
         log("依赖有变化，正在安装")
         subprocess.run([str(VENV / "bin/pip"), "install", "--quiet", "--require-hashes", "-r",
                         str(APP / "requirements.lock")], check=True, capture_output=True, timeout=1200)
+    if git("diff", "--quiet", previous, target, "--", "deploy/official/package-lock.json", check=False).returncode:
+        install_official()
     # Code must be readable by the service user; data/ keeps its private permissions.
     subprocess.run(["find", str(APP), "-path", str(APP / "data"), "-prune", "-o", "-exec", "chmod", "a+rX", "{}", "+"], check=True)
     write_version()
     subprocess.run(["systemctl", "restart", SERVICE], check=True, timeout=120)
+
+
+def install_official():
+    """Optional component: never roll back a working core upgrade for npm failures."""
+    source = APP / "deploy" / "official"
+    if not (source / "package-lock.json").is_file():
+        return
+    try:
+        version = subprocess.run(["node", "--version"], capture_output=True, text=True, check=True, timeout=30).stdout
+        if tuple(map(int, version.strip().lstrip("v").split(".")[:2])) < (18, 14) or not shutil.which("npm"):
+            raise RuntimeError("需要 Node.js >=18.14 和 npm，请重新运行 install.sh")
+        destination = APP.parent / "official"
+        destination.mkdir(mode=0o755, exist_ok=True)
+        (destination / ".installed-package-lock.json").unlink(missing_ok=True)
+        for name in ("package.json", "package-lock.json"):
+            shutil.copyfile(source / name, destination / name)
+            os.chmod(destination / name, 0o644)
+        log("官方数据组件有变化，正在安装")
+        subprocess.run(["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund",
+                        "--registry=" + os.environ.get("NPM_REGISTRY", "https://registry.npmmirror.com")],
+                       cwd=destination, check=True, capture_output=True, timeout=1200)
+        subprocess.run(["chown", "-R", "root:root", str(destination)], check=True)
+        subprocess.run(["chmod", "-R", "a+rX", str(destination)], check=True)
+        shutil.copyfile(source / "package-lock.json", destination / ".installed-package-lock.json")
+        os.chmod(destination / ".installed-package-lock.json", 0o644)
+    except (OSError, ValueError, subprocess.SubprocessError, RuntimeError) as exc:
+        log(f"警告：官方数据组件安装失败，匿名采集仍可使用：{exc}")
 
 
 def apply(ref):

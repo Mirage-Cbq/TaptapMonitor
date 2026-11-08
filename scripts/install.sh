@@ -54,6 +54,25 @@ find "$APP" -path "$APP/data" -prune -o -exec chmod a+rX {} +   # data/ 保持�
 log "安装 Python 依赖"
 "$VENV/bin/pip" install --quiet --require-hashes -r "$APP/requirements.lock"
 
+install_official() {
+    if ! command -v node >/dev/null 2>&1 || ! node --version | awk -F '[v.]' '{exit !($2 > 18 || ($2 == 18 && $3 >= 14))}' || ! command -v npm >/dev/null 2>&1; then
+        apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends nodejs npm || return 1
+    fi
+    node --version | awk -F '[v.]' '{exit !($2 > 18 || ($2 == 18 && $3 >= 14))}' || return 1
+    official=$BASE/official
+    if [ -f "$official/node_modules/@taptap/instant-games-open-mcp/dist/server.js" ] && cmp -s "$APP/deploy/official/package-lock.json" "$official/.installed-package-lock.json"; then
+        return 0
+    fi
+    install -d -m 755 "$official" || return 1
+    rm -f "$official/.installed-package-lock.json" || return 1
+    install -m 644 "$APP/deploy/official/package.json" "$APP/deploy/official/package-lock.json" "$official/" || return 1
+    (cd "$official" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund --registry="${NPM_REGISTRY:-https://registry.npmmirror.com}") || return 1
+    chown -R root:root "$official" && chmod -R a+rX "$official" || return 1
+    install -m 644 "$APP/deploy/official/package-lock.json" "$official/.installed-package-lock.json"
+}
+log "安装官方数据组件"
+install_official || log "警告：官方数据组件安装失败，匿名采集仍可使用；可重新运行安装脚本重试"
+
 install -d -m 750 -o "$RUN_AS" -g "$RUN_AS" "$APP/data" "$APP/data/upgrade"
 if [ ! -f "$ENV_FILE" ]; then
     (umask 077; printf 'MONITOR_API_TOKEN=%s\n' "$(python3 -c 'import secrets; print(secrets.token_hex(32))')" > "$ENV_FILE")

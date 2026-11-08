@@ -22,6 +22,7 @@ from taptap_monitor.delivery import Delivery, split_message
 from taptap_monitor.store import Store
 from taptap_monitor.website import site_data
 from taptap_monitor.lock import ProcessLock
+from taptap_monitor.official import OfficialBridge, OfficialError, OfficialService, daily_metrics, metric_day
 
 
 @pytest.fixture
@@ -702,3 +703,281 @@ def test_updater_checks_and_rejects_foreign_commits(tmp_path):
     assert subprocess.run([*updater, 'request'], env=env, capture_output=True).returncode == 1
     assert not (app / 'data' / 'upgrade' / 'request.json').exists()
     assert json.loads(status_file.read_text(encoding='utf-8'))['message'] == '无效的升级请求'
+
+
+def fake_official(settings, **options):
+    import sys
+    bridge = OfficialBridge(Path(settings.database).parent, node=sys.executable,
+                            server=str(Path(__file__).with_name('fake_official.py').resolve()), timeout=3)
+    bridge.home.mkdir(parents=True, exist_ok=True)
+    (bridge.home / 'behavior.json').write_text(json.dumps(options), encoding='utf-8')
+    return bridge
+
+
+def official_calls(bridge):
+    return [json.loads(line) for line in (bridge.home / 'calls.jsonl').read_text(encoding='utf-8').splitlines()]
+
+
+def test_official_bridge_envelopes_errors_and_shutdown(settings):
+    async def run():
+        bridge = fake_official(settings)
+        try:
+            assert bridge.installed
+            assert (await bridge.call('test_structured'))['answer'] == 42
+            assert (await bridge.call('check_environment_raw'))['auth']['has_mac_token'] is False
+            for tool, message in [('test_error', 'choose an app'), ('test_rpc_error', 'rpc failure')]:
+                with pytest.raises(OfficialError, match=message):
+                    await bridge.call(tool)
+            old_process = bridge.process
+            with pytest.raises(OfficialError, match='响应超时'):
+                await bridge.call('test_timeout', timeout=0.01)
+            assert old_process.returncode is not None and not bridge.pending
+            assert not (await bridge.call('check_environment_raw'))['auth']['has_mac_token']
+            process = bridge.process
+        finally:
+            await bridge.close()
+        assert process.returncode is not None and not bridge.pending
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('internal_poll', [False, True])
+def test_official_auth_sync_and_logout(settings, store, internal_poll):
+    async def run():
+        bridge = fake_official(settings, internal_poll=internal_poll)
+        service = OfficialService(store, bridge)
+        try:
+            waiting = await service.begin_auth()
+            assert waiting['auth']['status'] == 'waiting'
+            assert waiting['auth']['qr'].startswith('data:image/svg+xml;base64,')
+            assert waiting['auth']['expires_at'] > time.time()
+            task = service.auth_task
+            await service.begin_auth()
+            assert service.auth_task is task
+            await asyncio.wait_for(task, 3)
+            status = service.status()
+            assert status['authorized'] and status['auth']['status'] == 'success'
+            assert status['account'] is None
+            assert [(app['app_id'], app['monitored']) for app in status['apps']] == [(100, True), (200, False)]
+            assert all(secret not in json.dumps(store.setting('official')) for secret in ('device_code', 'fake-device-code', 'fake-kid', 'token_type'))
+            assert (await service.begin_auth())['auth']['status'] == 'success'
+            service.start_sync()
+            with pytest.raises(OfficialError, match='正在同步'):
+                service.start_sync()
+            await service.sync_task
+            assert set(store.reports(100)) == {'store_overview', 'review_overview', 'community_overview', 'store_snapshot'}
+            assert store.reports(100)['store_overview']['data']['data']['page_view_count'] == 1000
+            assert not store.reports(200)
+            daily = store.metrics([100], 'official')[0]
+            assert daily['page_view_count'] == 50 and daily['rating_trend_value'] == 8.5
+            assert daily['topic_trend_count'] == 2 and daily['favorite_trend_num'] == 3
+            assert service.status()['synced_at'] and not service.status()['syncing']
+            assert sum(call['name'] == 'list_developers_and_apps_raw' for call in official_calls(bridge)) == 3
+            service.sync_if_due()
+            assert service.sync_task.done()
+            service.state['synced_at'] = time.time() - 6 * 3600 - 1
+            service.sync_if_due()
+            next_task = service.sync_task
+            service.sync_if_due()
+            assert service.sync_task is next_task
+            await next_task
+            assert OfficialService(store, bridge).status()['authorized']
+            logged_out = await service.logout()
+            assert logged_out['auth']['status'] == 'idle' and not logged_out['authorized']
+            assert store.setting('official')['apps'] == [] and bridge.process is None
+            assert not service.metrics()['games'][0]['official']
+        finally:
+            await service.close()
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('auth_error, expires_in, expected', [
+    ('', 0.001, 'expired'), ('expired_token', 20, 'expired'), ('access_denied', 20, 'failed')])
+def test_official_auth_expiry_and_failure(settings, store, auth_error, expires_in, expected):
+    async def run():
+        service = OfficialService(store, fake_official(settings, auth_error=auth_error, expires_in=expires_in))
+        try:
+            await service.begin_auth()
+            await asyncio.wait_for(service.auth_task, 3)
+            assert service.status()['auth']['status'] == expected
+            assert service.status()['auth']['qr'] is None and not service.status()['authorized']
+        finally:
+            await service.close()
+    asyncio.run(run())
+
+
+def test_official_logout_cancels_pending_authorization(settings, store):
+    async def run():
+        service = OfficialService(store, fake_official(settings, internal_poll=True))
+        try:
+            await service.begin_auth()
+            await asyncio.sleep(0.015)
+            old_process = service.bridge.process
+            status = await service.logout()
+            assert old_process.returncode is not None and service.auth_task.cancelled()
+            assert not status['authorized'] and status['auth']['status'] == 'idle'
+            assert not (service.bridge.home / 'authorized.json').exists()
+        finally:
+            await service.close()
+    asyncio.run(run())
+
+
+def test_official_sync_isolates_games_and_invalid_token(settings, store):
+    async def run():
+        bridge = fake_official(settings, fail_app=100, extra_apps=[{'app_id': 101, 'app_title': 'Other game'}])
+        service = OfficialService(store, bridge)
+        store.save_game(383549, {'id': 101, 'title': 'Other game'})
+        try:
+            await service.begin_auth()
+            await service.auth_task
+            await service.sync()
+            assert 'temporary app failure' in service.status()['error']
+            assert not store.reports(100) and len(store.reports(101)) == 4
+            assert service.status()['authorized']
+            (bridge.home / 'behavior.json').write_text(json.dumps({'invalid_on': 'get_current_app_store_overview_raw'}))
+            await service.sync()
+            assert not service.status()['authorized'] and '重新扫码' in service.status()['error']
+            with pytest.raises(OfficialError, match='扫码授权'):
+                service.start_sync()
+            assert not store.reports(100)
+        finally:
+            await service.close()
+    asyncio.run(run())
+
+
+def test_official_endpoints_and_metrics(settings, store, monkeypatch):
+    bridge = fake_official(settings, internal_poll=True, report_delay=0.03)
+    monkeypatch.setenv('TAPTAP_OFFICIAL_SERVER', bridge.server)
+    monkeypatch.setenv('TAPTAP_OFFICIAL_NODE', bridge.node)
+    store.save_game(383549, {'id': 100, 'title': 'Official Game', 'icon': {'original_url': 'https://test.invalid/icon'}})
+    store.save_game(383549, {'id': 102, 'title': 'Public Game', 'stat': {
+        'rating': {'score': '9.0'}, 'review_count': 3, 'topic_count': 2, 'fans_count': 5, 'hits_total': 17,
+        'reserve_count': 4, 'download_count': 0, 'vote_info': {'5': 3}}})
+    app = create_app(settings, scheduler_enabled=False)
+    headers = {'Authorization': 'Bearer ' + settings.api_token}
+    with TestClient(app) as client:
+        for method, path in [('GET', '/api/official'), ('POST', '/api/official/auth'),
+                             ('DELETE', '/api/official/auth'), ('POST', '/api/official/sync'), ('GET', '/api/metrics')]:
+            assert client.request(method, path).status_code == 401
+        assert client.get('/api/official', headers=headers).json()['installed']
+        assert client.post('/api/official/sync', headers=headers).status_code == 409
+        response = client.post('/api/official/auth', headers=headers)
+        assert response.status_code == 202 and response.json()['auth']['status'] == 'waiting'
+        client.portal.call(lambda: asyncio.wait_for(app.state.official.auth_task, 3))
+        assert client.get('/api/official', headers=headers).json()['authorized']
+        response = client.post('/api/official/sync', headers=headers)
+        assert response.status_code == 202 and response.json()['syncing']
+        assert client.post('/api/official/sync', headers=headers).status_code == 409
+        client.portal.call(lambda: asyncio.wait_for(app.state.official.sync_task, 3))
+        result = client.get('/api/metrics?days=7&developer_id=383549', headers=headers).json()
+        assert len(result['days']) == 7 and result['days'] == sorted(result['days'])
+        from datetime import date, timedelta
+        assert result['days'][-1] == date.today().isoformat()
+        games = {game['app_id']: game for game in result['games']}
+        assert set(games) == {100, 102}
+        assert games[100]['official'] and games[100]['official_fetched_at']
+        assert games[100]['icon'] == 'https://test.invalid/icon'
+        assert games[100]['summary']['page_view_count'] == 1000
+        assert games[100]['summary']['feed_count'] is None
+        assert games[100]['official_daily'][0]['rating_trend_value'] == 8.5
+        public = games[102]
+        assert not public['official'] and public['summary'] == {} and public['official_daily'] == []
+        assert public['official_fetched_at'] is None and public['icon'] is None
+        assert public['public_daily'][0]['rating'] == 9 and public['public_daily'][0]['votes']['5'] == 3
+        assert public['public_daily'][0]['download_count'] == 0
+        store.save_metrics(100, 'official', {'outside': 1}, (date.today() + timedelta(days=1)).isoformat())
+        store.save_metrics(100, 'official', {'outside': 1}, (date.today() - timedelta(days=7)).isoformat())
+        filtered = client.get('/api/metrics?days=7&app_id=100', headers=headers).json()['games']
+        assert len(filtered) == 1 and len(filtered[0]['official_daily']) == 1
+        assert client.get('/api/metrics?developer_id=999&app_id=100', headers=headers).json()['games'] == []
+        for days in (6, 181):
+            assert client.get(f'/api/metrics?days={days}', headers=headers).status_code == 422
+        assert client.delete('/api/official/auth', headers=headers).json()['authorized'] is False
+        assert not client.get('/api/metrics?app_id=100', headers=headers).json()['games'][0]['official']
+    assert app.state.official.bridge.process is None
+
+
+def test_official_missing_component(settings, monkeypatch):
+    monkeypatch.setenv('TAPTAP_OFFICIAL_SERVER', str(Path(settings.database).parent / 'missing.js'))
+    with TestClient(create_app(settings, scheduler_enabled=False)) as client:
+        headers = {'Authorization': 'Bearer ' + settings.api_token}
+        assert not client.get('/api/official', headers=headers).json()['installed']
+        for path in ('/api/official/auth', '/api/official/sync'):
+            response = client.post(path, headers=headers)
+            assert response.status_code == 409 and response.json()['detail']
+        assert client.delete('/api/official/auth', headers=headers).json()['auth']['status'] == 'idle'
+
+
+def test_official_daily_dates_and_numeric_fields():
+    assert metric_day('2026-01-02') == metric_day(20260102) == metric_day(1767312000) == metric_day(1767312000000)
+    rows = list(daily_metrics({'trend': [None, {'day': 'broken', 'dt': '20260102', 'count': 0, 'label': 'skip',
+                                             'flag': True, 'bad': float('nan'), 'download_count': 3}],
+                               'topic_trend': [{'date': '2026-02-30', 'count': 1}], 'favorite_trend': None}))
+    assert rows == [('2026-01-02', {'trend_count': 0, 'download_count': 3})]
+
+
+def test_collection_completion_starts_official_sync_when_due(settings, store, monkeypatch):
+    bridge = fake_official(settings)
+    (bridge.home / 'authorized.json').write_text('true')
+    store.save_setting('official', {'authorized': True, 'synced_at': time.time() - 21601})
+    monkeypatch.setenv('TAPTAP_OFFICIAL_SERVER', bridge.server)
+    monkeypatch.setenv('TAPTAP_OFFICIAL_NODE', bridge.node)
+    completed = []
+
+    async def collect(self, developer_id, run_id):
+        completed.append(run_id)
+        self.store.finish_run(run_id, {'created': 0, 'updated': 0}, [])
+        return {'run_id': run_id}
+
+    monkeypatch.setattr(Collector, 'collect', collect)
+    app = create_app(settings, scheduler_enabled=False)
+    with TestClient(app) as client:
+        headers = {'Authorization': 'Bearer ' + settings.api_token}
+        assert client.post('/api/scan', headers=headers).status_code == 202
+
+        async def wait_for_sync():
+            while app.state.official.sync_task is None:
+                await asyncio.sleep(0.01)
+            await app.state.official.sync_task
+
+        client.portal.call(lambda: asyncio.wait_for(wait_for_sync(), 3))
+        assert completed and len(store.reports(100)) == 4
+        task = app.state.official.sync_task
+        assert client.post('/api/scan', headers=headers).status_code == 202
+        client.portal.call(asyncio.sleep, 0.02)
+        assert len(completed) == 2 and app.state.official.sync_task is task
+
+
+def test_official_updater_install_is_optional_and_pinned(tmp_path, monkeypatch):
+    import importlib.util
+    import subprocess
+    import sys
+
+    if os.name == 'nt':
+        for name in ('fcntl', 'pwd'):
+            monkeypatch.setitem(sys.modules, name, SimpleNamespace())
+    spec = importlib.util.spec_from_file_location('official_updater_test', Path(__file__).parents[1] / 'scripts/updater.py')
+    updater = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(updater)
+    updater.APP = tmp_path / 'app'
+    source = updater.APP / 'deploy' / 'official'
+    source.mkdir(parents=True)
+    for name in ('package.json', 'package-lock.json'):
+        (source / name).write_text('{}')
+    messages, calls = [], []
+    (tmp_path / 'official').mkdir()
+    (tmp_path / 'official' / '.installed-package-lock.json').write_text('old lock')
+    updater.log = messages.append
+    monkeypatch.setattr(updater.shutil, 'which', lambda _: 'npm')
+    monkeypatch.setenv('NPM_REGISTRY', 'https://registry.test')
+
+    def execute(args, **kwargs):
+        calls.append(args)
+        if args[0] == 'npm':
+            raise subprocess.CalledProcessError(1, args)
+        return SimpleNamespace(stdout='v18.19.0')
+
+    monkeypatch.setattr(updater.subprocess, 'run', execute)
+    updater.install_official()
+    assert any('警告' in message for message in messages)
+    assert calls[-1] == ['npm', 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--registry=https://registry.test']
+    assert not (tmp_path / 'official' / '.installed-package-lock.json').exists()
