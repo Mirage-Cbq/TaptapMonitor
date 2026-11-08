@@ -1,6 +1,7 @@
 import asyncio
 from dataclasses import replace
 import json
+import re
 import time
 from types import SimpleNamespace
 from io import BytesIO
@@ -524,3 +525,120 @@ def test_settings_load_runtime_bounds(tmp_path):
         path.write_text(f'[monitor]\n{key}={value}\n', encoding='utf-8')
         with pytest.raises(ValueError):
             Settings.load(str(path))
+
+
+def test_site_data_game_stats(store):
+    store.save_game(383549, {"id": 100, "title": "有评分的作品", "stat": {
+        "rating": {"score": "7.7", "max": "10"}, "vote_info": {"1": 4, "2": 3, "3": 2, "4": 7, "5": 11},
+        "review_count": 29, "topic_count": "20", "fans_count": 1900, "hits_total": 2305,
+    }})
+    stats = site_data(store, 383549)["games"][0]["stats"]
+    assert stats == {"rating": {"score": 7.7, "max": 10},
+                     "vote_info": {"1": 4, "2": 3, "3": 2, "4": 7, "5": 11},
+                     "review_count": 29, "topic_count": 20, "fans_count": 1900, "hits_total": 2305}
+
+
+@pytest.mark.parametrize('score', ['', '0', '0.0', None])
+def test_site_data_unrated_game(store, score):
+    store.save_game(383549, {"id": 100, "title": "暂无评分", "stat": {
+        "rating": {"score": score, "max": score}, "review_count": 0,
+    }})
+    stats = site_data(store, 383549)["games"][0]["stats"]
+    assert stats["rating"] == {"score": None, "max": None}
+    assert stats["vote_info"] == {str(star): 0 for star in range(1, 6)}
+    assert stats["review_count"] == 0 and stats["fans_count"] is None
+    store.save_game(383549, {"id": 100, "title": "无统计"})
+    assert site_data(store, 383549)["games"][0]["stats"]["rating"] == {"score": None, "max": None}
+
+
+def test_site_data_review_highlights(store, settings, monkeypatch):
+    store.add_developer(999, '其他工作室')
+    store.save_game(999, {"id": 101, "title": "其他作品"})
+    store.save_game(383549, {"id": 102, "title": "隐藏作品"})
+    store.save_presentation(383549, {"visible": False}, 102)
+    store.save_presentation(383549, {"title": "官网作品名"}, 100)
+    good = replace(item(), author='玩家昵称', score=5, body='这是一段足够长的真实玩家评价。')
+    for n, changes in enumerate([
+        {"score": 3}, {"official": True}, {"kind": "topic"}, {"kind": "review_comment"},
+        {"kind": "topic_comment"}, {"body": "太短"}, {"body": "长" * 401},
+        {"app_id": 101}, {"app_id": 102},
+    ]):
+        store.save_item(replace(good, source_id=f'bad-{n}', published_at=9999, **changes))
+    # Enough eligible records to exercise both the SQL limit and recency ordering.
+    for n in range(8):
+        store.save_item(replace(good, source_id=f'good-{n}', score=4 if n % 2 else 5,
+                                published_at=100 + n, body='玩' * (400 if n == 7 else 12),
+                                author='' if n == 6 else good.author))
+    queries = []
+    original_query = store.query
+    def query(sql, args=()):
+        queries.append(sql)
+        return original_query(sql, args)
+    monkeypatch.setattr(store, 'query', query)
+    data = site_data(store, 383549)
+    reviews = data['highlights']
+    assert data['show_reviews'] is True
+    assert len(reviews) == 6
+    assert [review['published_at'] for review in reviews] == list(range(107, 101, -1))
+    assert {review['game_id'] for review in reviews} == {100}
+    assert {review['game_title'] for review in reviews} == {'官网作品名'}
+    assert reviews[0]['author'] == '玩**' and reviews[1]['author'] == '匿**'
+    assert reviews[0]['excerpt'] == '玩' * 139 + '…'
+    assert reviews[-1]['excerpt'] == '玩' * 12
+    assert reviews[0]['url'] == good.url and reviews[0]['score'] == 4
+    review_queries = [sql for sql in queries if 'JOIN items' in sql]
+    assert len(review_queries) == 1 and 'json_extract' in review_queries[0] and 'LIMIT 6' in review_queries[0]
+    # Admin previews may include hidden games, but their reviews remain private.
+    assert {review['game_id'] for review in site_data(store, 383549, include_hidden=True)['highlights']} == {100}
+    with TestClient(create_app(settings, scheduler_enabled=False)) as client:
+        headers = {'Authorization': 'Bearer ' + settings.api_token}
+        assert client.patch('/api/sites/383549', headers=headers, json={'show_reviews': False}).status_code == 200
+        assert store.presentation(383549)['custom']['show_reviews'] is False
+        queries.clear()
+        assert 'highlights' not in site_data(store, 383549)
+        assert not any('JOIN items' in sql for sql in queries)
+        assert 'highlights' not in client.get('/public/site?developer_id=383549').json()
+        assert len(client.get('/api/sites/383549', headers=headers).json()['highlights']) == 6
+        assert client.patch('/api/sites/383549', headers=headers, json={'show_reviews': True}).status_code == 200
+        assert len(client.get('/public/site?developer_id=383549').json()['highlights']) == 6
+
+
+def test_public_page_og_image_and_json_ld_escaping(store, settings):
+    from html import escape, unescape
+
+    dangerous = '</script><script>不可执行</script> & "工作室"'
+    logo = '/media/logo.png?name="工作室"&x=<标识>'
+    cover = '/media/cover.png?name="作品"&x=<封面>'
+    store.save_presentation(383549, {'display_name': dangerous, 'logo_url': logo})
+    store.save_game(383549, {'id': 100, 'title': dangerous, 'cover': {'url': cover},
+                            'description': {'raw_text': '第一行\n第二行 ' + dangerous}})
+    store.save_game(383549, {'id': 101, 'title': '隐藏游戏'})
+    store.save_presentation(383549, {'visible': False}, 101)
+    with TestClient(create_app(settings, scheduler_enabled=False)) as client:
+        for path, image in [('/', logo), ('/studio/383549', logo), ('/studio/383549/games/100', cover)]:
+            response = client.get(path)
+            assert response.status_code == 200
+            html = response.text
+            assert not re.search(r'__[A-Z_]+__', html)
+            assert f'<meta property="og:image" content="{escape(image, quote=True)}">' in html
+            assert unescape(re.search(r'property="og:image" content="([^"]*)"', html)[1]) == image
+            raw = re.search(r'<script type="application/ld\+json">(.*?)</script>', html, re.S)[1]
+            assert '<' not in raw and '\\u003c' in raw and '\\u0026' in raw
+            graph = json.loads(raw)['@graph']
+            assert graph[0]['@type'] == 'Organization' and graph[0]['name'] == dangerous
+            assert graph[0]['logo'] == logo
+            assert graph[1]['@type'] == 'ItemList' and graph[1]['numberOfItems'] == 1
+            listed = graph[1]['itemListElement'][0]
+            assert listed['position'] == 1 and listed['item']['name'] == dangerous
+            assert listed['item']['url'] == '/studio/383549/games/100'
+            assert dangerous not in html
+            embedded = re.search(r'<script id="site-data" type="application/json">(.*?)</script>', html, re.S)[1]
+            assert json.loads(embedded)['games'][0]['description'].startswith('第一行\n第二行')
+            for image_tag in re.findall(r'<img\b[^>]*>', html):
+                assert all(attribute in image_tag for attribute in ('loading="lazy"', 'width=', 'height=', 'referrerpolicy="no-referrer"'))
+        store.save_presentation(383549, {'visible': False}, 100)
+        empty = client.get('/')
+        assert empty.status_code == 200
+        assert '作品正在准备中' in empty.text
+        assert json.loads(re.search(r'<script type="application/ld\+json">(.*?)</script>', empty.text, re.S)[1])['@graph'][1]['numberOfItems'] == 0
+        assert client.get('/studio/383549/games/100').status_code == 404

@@ -223,6 +223,7 @@
     $('#developer-detail').hidden=false; $('#developer-title').textContent=developers.find(d=>d.id===id)?.name || site.name;
     $('#studio-link').href='/studio/'+id;
     const form=$('#site-form'); ['display_name','tagline','intro','about'].forEach(key=>field(form,key).value=site.custom[key] || '');
+    field(form,'show_reviews').checked=site.custom.show_reviews!==false;
     field(form,'published').checked=site.custom.published!==false; $('#logo-preview').src=safeUrl(site.logo,true) || '/favicon.svg';
     $('#set-primary').disabled=site.is_primary; $('#set-primary').textContent=site.is_primary?'当前默认官网':'设为默认官网';
     const developer=developers.find(d=>d.id===id);
@@ -355,7 +356,7 @@
     await api('developers','POST',{id}); developerId=id; $('#developer-url').value=''; await loadCatalog(); renderDevelopers(); await loadSite(); await loadStatus(); notify('厂商已添加并安排同步，作品和官网内容将自动生成。');
   }));
   $('#rename-form').addEventListener('submit',guarded(async()=>{await api('developers/'+developerId,'PATCH',{name:field($('#rename-form'),'name').value.trim()}); await loadCatalog(); renderDevelopers(); $('#developer-title').textContent=developers.find(d=>d.id===developerId).name; notify('厂商名称已保存。');}));
-  $('#site-form').addEventListener('submit',guarded(async()=>{const body={}, form=$('#site-form'); ['display_name','tagline','intro','about'].forEach(key=>body[key]=field(form,key).value); body.published=field(form,'published').checked; await api('sites/'+developerId,'PATCH',body); notify('官网设置已保存。');}));
+  $('#site-form').addEventListener('submit',guarded(async()=>{const body={}, form=$('#site-form'); ['display_name','tagline','intro','about'].forEach(key=>body[key]=field(form,key).value); body.published=field(form,'published').checked; body.show_reviews=field(form,'show_reviews').checked; await api('sites/'+developerId,'PATCH',body); notify('官网设置已保存。');}));
   $('#subscription-form').addEventListener('submit',guarded(async()=>{const form=$('#subscription-form'); await api('developers/'+developerId,'PATCH',{enabled:field(form,'enabled').checked,target_umo:field(form,'target_umo').value.trim()}); await loadCatalog(); renderDevelopers(); notify('监测与推送设置已保存。');}));
   $('#upload-logo').addEventListener('click',guarded(async()=>{const file=$('#studio-logo').files[0]; if (!file) throw new Error('请先选择图标文件。'); if (file.size>8*1024*1024) throw new Error('图标不能超过 8 MB。'); await api(`sites/${developerId}/logo`,'PUT',file); await loadSite(); await loadCatalog(); renderDevelopers(); $('#studio-logo').value=''; notify('厂商图标已更新。');}));
   $('#reset-logo').addEventListener('click',guarded(async()=>{await api(`sites/${developerId}/logo`,'DELETE'); await loadSite(); await loadCatalog(); renderDevelopers(); notify('已恢复采用 TapTap 厂商图标。');}));

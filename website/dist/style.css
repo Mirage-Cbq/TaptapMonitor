@@ -7,3 +7,70 @@
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*:before,*:after{animation:none!important;transition:none!important}.js .reveal{opacity:1;transform:none}}
 
 .hero-mark{position:absolute;right:5.4%;top:135px;width:40%;height:510px;margin:0;display:grid;place-items:center}.hero-logo{width:min(100%,480px);height:auto;object-fit:contain;animation:arrive 1s .18s both}.hero-intro{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}.header .brand{min-width:0;max-width:55%}.header .brand span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.header .brand img{flex-shrink:0;object-fit:contain}@media(max-width:850px){.hero-mark{right:4%;top:200px;width:38%;height:380px}}@media(max-width:560px){.hero-mark{right:calc(50% - 145px);top:auto;bottom:65px;width:290px;height:290px}.hero-logo{width:290px}.hero-content{padding-top:116px}.hero h1{font-size:43px}.hero-tagline{font-size:21px}.hero-intro{max-width:27em}}
+
+/* 作品数据与玩家回声沿用工作室的纸色、绿意和留白。 */
+:root{color-scheme:light dark}
+[hidden]{display:none!important}
+body{overflow-wrap:anywhere}
+dl,dd,blockquote{margin:0}
+.brand img{object-fit:contain;flex-shrink:0}
+.studio-summary{max-width:1440px;margin:auto;padding:0 5.4%}
+.studio-summary dl{border-top:1px solid var(--line);border-bottom:1px solid var(--line);display:flex;flex-wrap:wrap;gap:28px 60px;padding:32px 0}
+.studio-summary dl>div{flex:1;min-width:120px;display:flex;flex-direction:column-reverse;gap:8px}
+.studio-summary dt{font-size:12px;color:var(--muted)}
+.studio-summary dd{font-size:32px;font-weight:700;line-height:1.2;font-variant-numeric:tabular-nums;letter-spacing:-1px}
+.game-stats{display:flex;align-items:center;flex-wrap:wrap;gap:10px 18px;font-size:12px;color:var(--muted);margin:13px 0}
+.rating-badge{color:var(--green);background:#e6ecd8;padding:5px 9px;border-radius:4px;font-weight:700;font-variant-numeric:tabular-nums}
+.reviews{border-top:1px solid var(--line)}
+.review-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:32px}
+.player-review{min-width:0;border-top:1px solid var(--line);padding-top:22px;display:flex;flex-direction:column;align-items:flex-start}
+.review-game{font-size:12px;color:var(--muted);border-bottom:1px solid var(--line);padding-bottom:5px;margin-bottom:15px}
+.review-stars{color:var(--green);font-size:13px;letter-spacing:3px;margin-bottom:12px}
+.player-review blockquote{font-size:14px;line-height:1.95;white-space:pre-line;margin-bottom:24px}
+.review-footer{display:flex;gap:8px 14px;flex-wrap:wrap;align-items:center;font-size:11px;color:var(--muted);margin-top:auto;width:100%}
+.review-footer .text-link{font-size:11px;margin-left:auto}
+.rating-panel{display:grid;grid-template-columns:1fr 1.5fr;gap:28px;align-items:center;border-block:1px solid var(--line);padding:24px 0;margin:24px 0}
+.rating-value{font-size:32px;font-weight:700;line-height:1.4;margin-top:7px;color:var(--green);font-variant-numeric:tabular-nums}
+.rating-distribution{display:grid;gap:8px}
+.rating-row{display:grid;grid-template-columns:30px minmax(0,1fr) 45px;gap:10px;align-items:center;font-size:11px;color:var(--muted)}
+.rating-track{height:6px;background:var(--line);border-radius:10px;overflow:hidden}
+.rating-fill{display:block;height:100%;background:var(--green);border-radius:10px}
+.rating-count{text-align:right;font-variant-numeric:tabular-nums}
+.detail-heading{font-size:16px;font-weight:650;margin:25px 0 12px}
+.review-note{font-size:12px;color:var(--muted);line-height:1.8}
+.detail-reviews .review-list{grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;margin-top:18px}
+.dialog-image{height:auto}
+.dialog-close{position:sticky;display:block;margin:15px 15px -53px auto;top:15px;right:auto;box-shadow:0 2px 14px #0002;flex-shrink:0}
+.dialog-body{min-width:0}
+.dialog-body #dialog-description{white-space:pre-wrap}
+.dialog-actions{border-top:1px solid var(--line);padding-top:24px}
+.share-status{overflow-wrap:anywhere}
+.filters button{min-height:36px}
+:focus-visible{outline:3px solid #779346;outline-offset:4px}
+@media(max-width:850px){
+  .studio-summary{padding-inline:6%}.studio-summary dl{gap:24px 30px}
+  .review-list{grid-template-columns:repeat(2,minmax(0,1fr));gap:28px}
+}
+@media(max-width:560px){
+  .hero{height:auto;min-height:0;padding-bottom:370px}
+  .hero-content{padding-bottom:35px}.hero-mark{bottom:65px}
+  .hero-bottom{gap:20px}.hero h1{font-size:clamp(34px,10.5vw,43px)}
+  .studio-summary dl{gap:24px 16px;padding-block:26px}
+  .studio-summary dl>div{flex-basis:calc(50% - 16px);min-width:0}
+  .studio-summary dd{font-size:27px}
+  .review-list,.detail-reviews .review-list{grid-template-columns:1fr}
+  .review-list{gap:28px}.player-review blockquote{margin-bottom:18px}
+  .rating-panel{grid-template-columns:1fr;gap:18px}.rating-value{font-size:30px}
+  .game-stats{gap:8px 14px}.dialog-actions{gap:14px 20px}
+  .footer>p{min-width:0}.header nav{flex-shrink:0}
+}
+@media(prefers-color-scheme:dark){
+  :root{--paper:#17251e;--ink:#e2e9d8;--green:#b4cf8e;--muted:#aab9a5;--line:#3b4d3d}
+  .hero-intro,.hero-bottom{color:var(--muted)}
+  .button{background:#4b714a;color:#fff}.button:hover{background:#5b8254}
+  .rating-badge{background:#2c4230;color:var(--green)}
+  .game-art{background:#2c3c2c}.skip{background:var(--paper)}
+  .invitation{background:#243c2c;color:#eff2e3}.button.light{color:#283e2d}
+  .about-symbol{opacity:.15}::selection{background:#526b3d;color:#fff}
+  button:focus-visible,a:focus-visible,:focus-visible{outline-color:#bad58f}
+}

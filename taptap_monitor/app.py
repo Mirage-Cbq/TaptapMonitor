@@ -43,6 +43,7 @@ class DeveloperUpdate(BaseModel):
 
 class SiteUpdate(BaseModel):
     published: bool | None = None
+    show_reviews: bool | None = None
     display_name: str | None = Field(default=None, max_length=120)
     tagline: str | None = Field(default=None, max_length=120)
     intro: str | None = Field(default=None, max_length=1000)
@@ -365,11 +366,26 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
             template = (static_dir / "index.html").read_text(encoding="utf-8")
             title = (selected["title"] + " · " if selected else "") + data["name"]
             description = selected["description"] if selected else data["intro"]
+            structured_data = {
+                "@context": "https://schema.org",
+                "@graph": [
+                    {"@type": "Organization", "name": data["name"], "logo": data["logo"],
+                     "url": f"/studio/{developer_id}", "description": data["intro"]},
+                    {"@type": "ItemList", "numberOfItems": len(data["games"]), "itemListElement": [
+                        {"@type": "ListItem", "position": position, "item": {
+                            "@type": "VideoGame", "name": game["title"], "image": game["cover"],
+                            "url": f"/studio/{developer_id}/games/{game['id']}"}}
+                        for position, game in enumerate(data["games"], 1)
+                    ]},
+                ],
+            }
             replacements = {
                 "__PAGE_TITLE__": escape(title), "__PAGE_DESCRIPTION__": escape(description[:200], quote=True),
                 "__STUDIO_NAME__": escape(data["name"]), "__STUDIO_TAGLINE__": escape(data["tagline"]),
                 "__STUDIO_LOGO__": escape(data["logo"], quote=True),
+                "__OG_IMAGE__": escape((selected["cover"] if selected else "") or data["logo"], quote=True),
                 "__SITE_DATA__": json.dumps(data, ensure_ascii=False).replace("<", "\\u003c").replace("&", "\\u0026"),
+                "__JSON_LD__": json.dumps(structured_data, ensure_ascii=False).replace("<", "\\u003c").replace("&", "\\u0026"),
             }
             template = re.sub("|".join(replacements), lambda match: replacements[match[0]], template)
             return HTMLResponse(template, headers={"Cache-Control": "no-cache"})

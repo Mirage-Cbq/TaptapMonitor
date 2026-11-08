@@ -6,24 +6,26 @@
   <meta name="description" content="__PAGE_DESCRIPTION__">
   <meta property="og:title" content="__PAGE_TITLE__">
   <meta property="og:description" content="__PAGE_DESCRIPTION__">
+  <meta property="og:image" content="__OG_IMAGE__">
   <meta name="theme-color" content="#f6f5ec">
   <title>__PAGE_TITLE__</title>
   <link rel="icon" href="__STUDIO_LOGO__">
   <link rel="stylesheet" href="/style.css">
   <script id="site-data" type="application/json">__SITE_DATA__</script>
+  <script type="application/ld+json">__JSON_LD__</script>
   <script src="/site.js" defer></script>
 </head>
 <body>
   <a class="skip" href="#games">跳到游戏作品</a>
   <header class="header">
-    <a class="brand" href="#top" aria-label="工作室首页"><img data-studio-logo src="__STUDIO_LOGO__" width="42" height="42" alt=""><span data-studio-name>__STUDIO_NAME__</span></a>
+    <a class="brand" href="#top" aria-label="工作室首页"><img data-studio-logo src="__STUDIO_LOGO__" width="42" height="42" loading="lazy" referrerpolicy="no-referrer" alt=""><span data-studio-name>__STUDIO_NAME__</span></a>
     <nav aria-label="主导航"><a href="#games">游戏作品</a><a href="#about">关于我们</a><a class="nav-out" data-taptap target="_blank" rel="noopener noreferrer">TapTap <span aria-hidden="true">↗</span></a></nav>
   </header>
   <main id="top">
     <section class="hero" aria-labelledby="studio-title">
-      <figure class="hero-mark"><img data-studio-logo class="hero-logo" src="__STUDIO_LOGO__" alt="__STUDIO_NAME__图标" fetchpriority="high"></figure>
+      <figure class="hero-mark"><img data-studio-logo class="hero-logo" src="__STUDIO_LOGO__" width="480" height="480" loading="lazy" referrerpolicy="no-referrer" alt="__STUDIO_NAME__图标"></figure>
       <div class="hero-content">
-        <p class="eyebrow entrance">A LITTLE IDEA. A WORLD OF PLAY.</p>
+        <p class="eyebrow entrance">小小的灵感，好玩的世界。</p>
         <h1 id="studio-title" class="entrance">__STUDIO_NAME__</h1>
         <p id="tagline" class="hero-tagline entrance">__STUDIO_TAGLINE__</p>
         <p id="studio-intro" class="hero-intro entrance"></p>
@@ -31,20 +33,36 @@
       </div>
       <div class="hero-bottom"><span>一点日常，一点好玩。</span><a href="#games" aria-label="向下浏览作品">向下探索 <span aria-hidden="true">↓</span></a></div>
     </section>
+    <section class="studio-summary" aria-label="工作室作品概览"><dl id="studio-summary"></dl></section>
     <section class="works section" id="games" aria-labelledby="games-title">
-      <div class="section-top reveal"><div><p class="eyebrow">OUR GAMES / 游戏作品</p><h2 id="games-title">来，选一个小世界。</h2></div><p class="section-aside">把平凡的小事，<br>玩出自己的节奏。</p></div>
+      <div class="section-top reveal"><div><p class="eyebrow">游戏作品</p><h2 id="games-title">来，选一个小世界。</h2></div><p class="section-aside">把平凡的小事，<br>玩出自己的节奏。</p></div>
       <div class="works-toolbar reveal"><p><span id="game-count">0</span> 个好玩的世界</p><div id="filters" class="filters" aria-label="筛选游戏"></div></div>
       <div id="game-list" class="game-list" aria-live="polite"></div>
       <p id="empty" class="empty" hidden>作品正在准备中。过一会儿再来逛逛吧。</p>
     </section>
+    <section id="reviews" class="reviews section reveal" aria-labelledby="reviews-title" hidden>
+      <div class="section-top"><div><p class="eyebrow">来自玩家的回声</p><h2 id="reviews-title">玩家怎么说</h2></div><p class="section-aside">近期好评节选 · 昵称已匿名处理</p></div>
+      <div id="review-list" class="review-list"></div>
+    </section>
     <section id="about" class="about section reveal" aria-labelledby="about-title">
-      <div><p class="eyebrow">BEHIND THE PLAY / 关于工作室</p><h2 id="about-title">让好玩的想法，<br>慢慢长大。</h2></div>
+      <div><p class="eyebrow">关于工作室</p><h2 id="about-title">让好玩的想法，<br>慢慢长大。</h2></div>
       <div class="about-copy"><p id="about-copy"></p><a class="text-link" data-taptap target="_blank" rel="noopener noreferrer">在 TapTap 认识我们 <span aria-hidden="true">↗</span></a></div>
       <div class="about-symbol" aria-hidden="true"><svg viewBox="0 0 160 160"><path d="M80 130C25 110 15 51 27 24c39 3 61 22 60 66 8-40 27-55 53-57 8 48-13 82-60 97Z"/><path d="M78 143V80M78 109 47 72m31 43 34-45"/></svg></div>
     </section>
-    <section class="invitation section reveal"><p class="eyebrow">SEE YOU IN THE GAME</p><h2>下一个好玩的瞬间，<br>等你来发现。</h2><a class="button light" data-taptap target="_blank" rel="noopener noreferrer">前往 TapTap <span aria-hidden="true">↗</span></a><p>喜欢、建议，或是遇到的小问题，<br>都欢迎在作品论坛告诉我们。</p></section>
+    <section class="invitation section reveal"><p class="eyebrow">游戏里见</p><h2>下一个好玩的瞬间，<br>等你来发现。</h2><a class="button light" data-taptap target="_blank" rel="noopener noreferrer">前往 TapTap <span aria-hidden="true">↗</span></a><p>喜欢、建议，或是遇到的小问题，<br>都欢迎在作品论坛告诉我们。</p></section>
   </main>
-  <footer class="footer"><a class="brand" href="#top"><img data-studio-logo src="__STUDIO_LOGO__" width="34" height="34" alt=""><span data-studio-name></span></a><p>© <span id="year"></span> <span data-studio-name></span></p><a href="#top">回到顶部 ↑</a></footer>
-  <dialog id="game-dialog" aria-labelledby="dialog-title"><button class="dialog-close" aria-label="关闭游戏详情">×</button><img id="dialog-image" class="dialog-image" alt=""><div class="dialog-body"><p id="dialog-tags" class="eyebrow"></p><h2 id="dialog-title"></h2><p id="dialog-description"></p><div class="dialog-actions"><a id="dialog-play" class="button" target="_blank" rel="noopener noreferrer">前往 TapTap ↗</a><a id="dialog-forum" class="text-link" target="_blank" rel="noopener noreferrer">玩家论坛 ↗</a><button id="share-game" class="text-link">分享作品</button></div><p id="share-status" class="share-status" role="status"></p></div></dialog>
+  <footer class="footer"><a class="brand" href="#top"><img data-studio-logo src="__STUDIO_LOGO__" width="34" height="34" loading="lazy" referrerpolicy="no-referrer" alt=""><span data-studio-name></span></a><p>© <span id="year"></span> <span data-studio-name></span></p><a href="#top">回到顶部 ↑</a></footer>
+  <dialog id="game-dialog" aria-labelledby="dialog-title">
+    <button class="dialog-close" aria-label="关闭游戏详情" autofocus>×</button>
+    <img id="dialog-image" class="dialog-image" width="1920" height="1080" loading="lazy" referrerpolicy="no-referrer" alt="">
+    <div class="dialog-body">
+      <p id="dialog-tags" class="eyebrow"></p><h2 id="dialog-title"></h2>
+      <div id="dialog-stats" class="game-stats"></div>
+      <section id="dialog-rating" class="rating-panel" aria-label="玩家评分与星级分布"></section>
+      <h3 class="detail-heading">游戏介绍</h3><p id="dialog-description"></p>
+      <section id="dialog-reviews" class="detail-reviews" aria-labelledby="dialog-reviews-title" hidden><h3 id="dialog-reviews-title" class="detail-heading">玩家怎么说</h3><p class="review-note">近期好评节选 · 昵称已匿名处理</p><div id="dialog-review-list" class="review-list"></div></section>
+      <div class="dialog-actions"><a id="dialog-play" class="button" target="_blank" rel="noopener noreferrer">前往 TapTap ↗</a><a id="dialog-forum" class="text-link" target="_blank" rel="noopener noreferrer">玩家论坛 ↗</a><button id="share-game" class="text-link">分享</button></div><p id="share-status" class="share-status" role="status"></p>
+    </div>
+  </dialog>
 </body>
 </html>

@@ -1,4 +1,26 @@
+import math
+
 from .content import text_of
+
+
+def _number(value, *, positive=False):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and (number > 0 if positive else number >= 0) else None
+
+
+def _stats(app):
+    stat = app.get("stat") or {}
+    rating = stat.get("rating") or {}
+    votes = stat.get("vote_info") or {}
+    return {
+        "rating": {key: _number(rating.get(key), positive=True) for key in ("score", "max")},
+        "vote_info": {str(star): int(_number(votes.get(str(star))) or 0) for star in range(1, 6)},
+        **{key: int(value) if (value := _number(stat.get(key))) is not None else None
+           for key in ("review_count", "topic_count", "fans_count", "hits_total")},
+    }
 
 
 def site_data(store, developer_id, include_hidden=False):
@@ -27,11 +49,37 @@ def site_data(store, developer_id, include_hidden=False):
             "url": f"https://www.taptap.cn/app/{row['id']}",
             "forum_url": f"https://www.taptap.cn/app/{row['id']}/topic",
             "updated_at": row["updated_at"],
+            "stats": _stats(app),
             "visible": override.get("visible", True), "featured": override.get("featured", False),
             "sort_order": override.get("sort_order", 0), "overrides": override if include_hidden else None,
             "source": {"title": row["title"], "description": text_of(app.get("description"))} if include_hidden else None,
         })
     games.sort(key=lambda game: (not game["featured"], game["sort_order"], -game["id"]))
+    show_reviews = custom.get("show_reviews", True)
+    highlights = []
+    if show_reviews or include_hidden:
+        rows = store.query("""
+            SELECT i.app_id AS game_id, json_extract(i.payload,'$.author') AS author,
+                   json_extract(i.payload,'$.score') AS score,
+                   trim(json_extract(i.payload,'$.body')) AS body,
+                   json_extract(i.payload,'$.published_at') AS published_at,
+                   json_extract(i.payload,'$.url') AS url
+            FROM developer_games d JOIN items i ON i.app_id=d.app_id
+            LEFT JOIN game_settings s ON s.developer_id=d.developer_id AND s.app_id=d.app_id
+            WHERE d.developer_id=? AND i.kind='review'
+              AND COALESCE(json_extract(s.custom,'$.visible'),1)=1
+              AND json_extract(i.payload,'$.score') BETWEEN 4 AND 5
+              AND COALESCE(json_extract(i.payload,'$.official'),0)=0
+              AND length(trim(json_extract(i.payload,'$.body'))) BETWEEN 12 AND 400
+            ORDER BY json_extract(i.payload,'$.published_at') DESC, i.source_id DESC
+            LIMIT 6
+        """, (developer_id,))
+        titles = {game["id"]: game["title"] for game in games}
+        for row in rows:
+            body = row.pop("body")
+            row["author"] = ((row["author"] or "").strip()[:1] or "匿") + "**"
+            highlights.append({**row, "game_title": titles[row["game_id"]],
+                               "excerpt": body if len(body) <= 140 else body[:139].rstrip() + "…"})
     avatar = source.get("avatar") or {}
     return {
         "developer_id": developer_id,
@@ -42,4 +90,6 @@ def site_data(store, developer_id, include_hidden=False):
         "about": custom.get("about") or "收集、成长、探索。在不同的游戏里，找到属于自己的节奏。欢迎在 TapTap 分享你的体验与建议。",
         "taptap_url": f"https://www.taptap.cn/developer/{developer_id}",
         "games": games, "custom": custom if include_hidden else None,
+        "show_reviews": show_reviews,
+        **({"highlights": highlights} if show_reviews or include_hidden else {}),
     }
