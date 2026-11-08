@@ -73,6 +73,7 @@ class Store:
                 );
                 CREATE TABLE IF NOT EXISTS runs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT, developer_id INTEGER,
+                    mode TEXT NOT NULL DEFAULT 'incremental',
                     started_at REAL NOT NULL, finished_at REAL, status TEXT NOT NULL,
                     new_items INTEGER NOT NULL DEFAULT 0, updated_items INTEGER NOT NULL DEFAULT 0,
                     errors TEXT NOT NULL DEFAULT '[]'
@@ -94,7 +95,11 @@ class Store:
                     app_id INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL, fetched_at REAL NOT NULL,
                     PRIMARY KEY (app_id, kind)
                 );
+                CREATE INDEX IF NOT EXISTS items_parent ON items(app_id,kind,json_extract(payload,'$.parent_id'));
+                CREATE INDEX IF NOT EXISTS items_published ON items(app_id,kind,json_extract(payload,'$.published_at'));
             """)
+            if "mode" not in {row["name"] for row in db.execute("PRAGMA table_info(runs)")}:
+                db.execute("ALTER TABLE runs ADD COLUMN mode TEXT NOT NULL DEFAULT 'incremental'")
 
     @contextmanager
     def connect(self):
@@ -237,18 +242,33 @@ class Store:
         return action
 
     def items(self, developer_id=None, app_id=None, kind=None, limit=100, offset=0):
-        where, args = ["1=1"], []
-        if developer_id is not None:
-            where.append("app_id IN (SELECT app_id FROM developer_games WHERE developer_id=?)")
-            args.append(developer_id)
-        if app_id is not None:
-            where.append("app_id=?")
-            args.append(app_id)
-        if kind is not None:
-            where.append("kind=?")
-            args.append(kind)
-        rows = self.query("SELECT payload,first_seen,last_seen FROM items WHERE " + " AND ".join(where) + " ORDER BY json_extract(payload,'$.published_at') DESC,source_id DESC LIMIT ? OFFSET ?", (*args, limit, offset))
-        return [{**json.loads(row["payload"]), "first_seen": row["first_seen"], "last_seen": row["last_seen"]} for row in rows]
+        where, args = self.item_scope(developer_id, app_id, kind)
+        rows = self.query("SELECT i.*,g.title game_title," + self.reply_count_sql() + " reply_count FROM items i LEFT JOIN games g ON g.id=i.app_id WHERE "
+                          + " AND ".join(where) + " ORDER BY json_extract(i.payload,'$.published_at') DESC,i.source_id DESC LIMIT ? OFFSET ?", (*args, limit, offset))
+        return [self.item_row(row) for row in rows]
+
+    @staticmethod
+    def reply_count_sql():
+        return """(SELECT COUNT(*) FROM items c WHERE c.app_id=i.app_id
+            AND c.kind=CASE i.kind WHEN 'review' THEN 'review_comment' WHEN 'topic' THEN 'topic_comment' END
+            AND json_extract(c.payload,'$.parent_id')=i.source_id)"""
+
+    @staticmethod
+    def item_row(row):
+        return {"source_reply_count": None, **json.loads(row["payload"]), "reply_count": row["reply_count"],
+                "game_title": row["game_title"], "first_seen": row["first_seen"], "last_seen": row["last_seen"]}
+
+    def replies(self, app_id, kind, source_id, limit=50, offset=0):
+        comment_kind = "review_comment" if kind == "review" else "topic_comment"
+        where = "i.app_id=? AND i.kind=? AND json_extract(i.payload,'$.parent_id')=?"
+        args = (app_id, comment_kind, str(source_id))
+        with self.connect() as db:
+            db.execute("BEGIN")
+            total = db.execute("SELECT COUNT(*) FROM items i WHERE " + where, args).fetchone()[0]
+            rows = db.execute("SELECT i.*,g.title game_title,0 reply_count FROM items i LEFT JOIN games g ON g.id=i.app_id WHERE "
+                              + where + " ORDER BY json_extract(i.payload,'$.published_at'),i.source_id LIMIT ? OFFSET ?",
+                              (*args, limit, offset)).fetchall()
+        return {"total": total, "items": [self.item_row(row) for row in rows]}
 
     def setting(self, key, default=None):
         rows = self.query("SELECT value FROM settings WHERE key=?", (key,))
@@ -277,6 +297,8 @@ class Store:
                      min_score=None, max_score=None, q=None, since=None, until=None,
                      official=None, sort="newest", limit=100, offset=0):
         where, args = self.item_scope(developer_id, app_id, kind)
+        if kind is None:
+            where.append("i.kind IN ('review','topic')")
         for value, expression in (
             (score, "i.kind='review' AND json_extract(i.payload,'$.score')=?"),
             (min_score, "i.kind='review' AND json_extract(i.payload,'$.score')>=?"),
@@ -304,11 +326,10 @@ class Store:
         with self.connect() as db:
             db.execute("BEGIN")
             total = db.execute("SELECT COUNT(*) FROM items i WHERE " + clause, args).fetchone()[0]
-            rows = db.execute("SELECT i.*,g.title AS game_title FROM items i LEFT JOIN games g ON g.id=i.app_id WHERE "
+            rows = db.execute("SELECT i.*,g.title AS game_title," + self.reply_count_sql() + " reply_count FROM items i LEFT JOIN games g ON g.id=i.app_id WHERE "
                               + clause + " ORDER BY " + ordering + ",i.app_id,i.kind,i.source_id LIMIT ? OFFSET ?",
                               (*args, limit, offset)).fetchall()
-        return {"items": [{**json.loads(row["payload"]), "game_title": row["game_title"],
-                           "first_seen": row["first_seen"], "last_seen": row["last_seen"]} for row in rows], "total": total}
+        return {"items": [self.item_row(row) for row in rows], "total": total}
 
     def stats(self, developer_id=None, app_id=None, days=30):
         kinds = ("review", "topic", "review_comment", "topic_comment")
@@ -335,11 +356,15 @@ class Store:
         series = [{"date": (start + timedelta(days=n)).isoformat(),
                    **{kind: daily.get(((start + timedelta(days=n)).isoformat(), kind), 0) for kind in kinds}}
                   for n in range(days)]
-        recent = self.query("SELECT COUNT(*) n FROM items i WHERE " + clause +
+        recent = self.query("SELECT COUNT(*) n FROM items i WHERE " + clause + " AND i.kind IN ('review','topic')" +
                             " AND json_extract(i.payload,'$.published_at')>=CAST(strftime('%s',?,'utc') AS INTEGER)"
                             " AND json_extract(i.payload,'$.published_at')<CAST(strftime('%s',?,'utc') AS INTEGER)",
                             (*args, (today - timedelta(days=6)).isoformat(), (today + timedelta(days=1)).isoformat()))[0]["n"]
-        previous = self.query("SELECT COUNT(*) n FROM items i WHERE " + clause +
+        recent_replies = self.query("SELECT COUNT(*) n FROM items i WHERE " + clause + " AND i.kind IN ('review_comment','topic_comment')"
+                            " AND json_extract(i.payload,'$.published_at')>=CAST(strftime('%s',?,'utc') AS INTEGER)"
+                            " AND json_extract(i.payload,'$.published_at')<CAST(strftime('%s',?,'utc') AS INTEGER)",
+                            (*args, (today - timedelta(days=6)).isoformat(), (today + timedelta(days=1)).isoformat()))[0]["n"]
+        previous = self.query("SELECT COUNT(*) n FROM items i WHERE " + clause + " AND i.kind IN ('review','topic')" +
                               " AND json_extract(i.payload,'$.published_at')>=CAST(strftime('%s',?,'utc') AS INTEGER)"
                               " AND json_extract(i.payload,'$.published_at')<CAST(strftime('%s',?,'utc') AS INTEGER)",
                               (*args, (today - timedelta(days=13)).isoformat(), (today - timedelta(days=6)).isoformat()))[0]["n"]
@@ -356,6 +381,7 @@ class Store:
             " FROM games g LEFT JOIN items i ON i.app_id=g.id" +
             (" WHERE " + " AND ".join(game_where) if game_where else "") + " GROUP BY g.id ORDER BY COUNT(i.source_id) DESC,g.id", game_args)
         per_game = [{"app_id": g["app_id"], "title": g["title"], "counts": {k: g[k] for k in kinds},
+                     "main_count": g["review"] + g["topic"], "reply_count": g["review_comment"] + g["topic_comment"],
                      "review_count": g["review"], "average_score": g["average_score"], **self._game_brief(g["metadata"])} for g in games]
         run_args = (developer_id,) if developer_id is not None else ()
         runs = self.query("SELECT *,json_array_length(errors) error_count FROM runs" +
@@ -363,7 +389,8 @@ class Store:
                           " ORDER BY id DESC LIMIT 20", run_args)
         finished = [r for r in runs if r["status"] != "running"]
         return {"totals": {"developers": len(self.developers()) if developer_id is None else int(self.developer(developer_id) is not None),
-                           "games": len(games), "items": sum(counts.values()), "recent_7_days": recent, "previous_7_days": previous, "average_score": average},
+                           "games": len(games), "items": counts["review"] + counts["topic"], "replies": counts["review_comment"] + counts["topic_comment"],
+                           "recent_replies_7_days": recent_replies, "recent_7_days": recent, "previous_7_days": previous, "average_score": average},
                 "counts": counts, "games": per_game, "score_distribution": distribution, "daily": series,
                 "runs": {"items": runs, "success_rate": sum(r["status"] == "ok" for r in finished) / len(finished) if finished else None,
                          "scope": "developer_and_global" if developer_id is not None else "global"}}
@@ -413,9 +440,11 @@ class Store:
                 last_success=COALESCE(excluded.last_success,streams.last_success),error=excluded.error""",
                 (key, next_url, status, now, now if status == "ok" else None, error))
 
-    def start_run(self, developer_id=None):
+    def start_run(self, developer_id=None, mode="incremental"):
+        if mode not in ("incremental", "full"):
+            raise ValueError("采集模式必须为 incremental 或 full")
         with self.connect() as db:
-            return db.execute("INSERT INTO runs(developer_id,started_at,status) VALUES(?,?,'running')", (developer_id, time.time())).lastrowid
+            return db.execute("INSERT INTO runs(developer_id,mode,started_at,status) VALUES(?,?,?,'running')", (developer_id, mode, time.time())).lastrowid
 
     def finish_run(self, run_id, counts, errors):
         with self.connect() as db:

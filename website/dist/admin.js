@@ -10,10 +10,10 @@
   const labels = {review:'评价', topic:'论坛帖子', review_comment:'评价回复', topic_comment:'论坛回复'};
   const statuses = {ok:'完成', partial:'部分完成', running:'进行中', interrupted:'已中断', pending:'待重试', error:'失败', sent:'已发送', sending:'发送中', failed:'失败', restricted:'访问受限'};
   const views = {
-    overview:['概览','玩家反馈与采集状态一览'], data:['反馈数据','检索、查看与导出收录的玩家反馈'],
+    overview:['概览','玩家反馈与采集状态一览'], data:['反馈数据','检索、查看与导出收录的玩家反馈'], insights:['数据洞察','评分可信度、异常预警、关键词与回复分析'],
     developers:['厂商与官网','管理监测厂商、官网内容与作品展示'], runs:['采集运行','采集任务、数据源与推送记录'], settings:['系统设置','采集与推送参数，保存后立即生效'],
   };
-  const KINDS = ['review','topic','review_comment','topic_comment'];
+  const KINDS = ['review','topic'];  // 回复计入所属的评价/帖子，不单独统计
   const date = value => value ? new Date(value * 1000).toLocaleString('zh-CN', {hour12:false}) : '—';
   const shortDate = value => value ? new Date(value * 1000).toLocaleDateString('zh-CN', {month:'2-digit', day:'2-digit'}) : '—';
   const ago = value => {
@@ -30,6 +30,8 @@
   let developers = [], games = [], developerId = null, site = null, view = 'overview', days = 30, tab = 'site';
   let offset = 0, total = 0, filterParams = new URLSearchParams(), status = null;
   let statsTicket = 0, searchTicket = 0, siteTicket = 0, polling = false, runtime = null, overviewData = null;
+  let coreData = null, coreTicket = 0, insightTicket = 0, insightDays = 30, insightData = null, officialTimer = null, defaultsApplied = false;
+  const primaryId = () => developers.find(d => d.is_primary)?.id ?? developers[0]?.id ?? null;
   const resets = new Set();
   const PAGE = 20;
   const notify = message => {$('#notice').textContent = message; $('#notice').hidden = false;};
@@ -37,7 +39,8 @@
     'Valid Bearer token required':'管理令牌无效，请重新登录', 'Developer already subscribed':'该厂商已在监测列表中',
     'A collection run is already active':'已有同步任务正在运行，请稍后再试', 'Developer not found':'未找到厂商',
     'Game not found for developer':'未找到该厂商的作品', 'Invalid logo image':'图标不是有效图片',
-    'Logo must be smaller than 8 MB':'图标不能超过 8 MB', 'Use PNG, JPEG or WebP, up to 4096 pixels per side':'请使用 PNG、JPEG 或 WebP，每边不超过 4096 像素'
+    'Logo must be smaller than 8 MB':'图标不能超过 8 MB', 'Use PNG, JPEG or WebP, up to 4096 pixels per side':'请使用 PNG、JPEG 或 WebP，每边不超过 4096 像素',
+    'Parent item not found':'未找到这条内容'
   };
   async function api(path, method='GET', body) {
     const binary = body instanceof Blob;
@@ -107,7 +110,15 @@
   }
   async function loadCatalog() {
     [developers,games] = await Promise.all([api('developers'),api('games')]);
-    options($('#overview-developer'),developers,'全部厂商'); options($('#filter-developer'),developers,'全部厂商');
+    const named=developers.map(d=>({...d,name:d.is_primary?d.name+'（默认）':d.name}));
+    ['#overview-developer','#filter-developer','#insight-developer'].forEach(id=>options($(id),named,'全部厂商'));
+  }
+  // 默认厂商是主要关注对象：首次进入时各处筛选默认选中它
+  function applyDefaults() {
+    const id=primaryId(); if (defaultsApplied || !id) return; defaultsApplied=true;
+    ['#overview-developer','#filter-developer','#insight-developer'].forEach(sel=>{$(sel).value=String(id);});
+    filterParams=new URLSearchParams({developer_id:String(id)});
+    if (!developerId) developerId=id;
   }
   async function gameOptions(developerSelect, gameSelect) {
     const rows=developerSelect.value ? await api('games?developer_id='+developerSelect.value) : games;
@@ -117,7 +128,7 @@
     const previous=status?.collecting;
     status=await api('status');
     const pill=$('#collecting'); pill.textContent=status.collecting ? '正在同步…' : '等待下次同步';
-    pill.classList.toggle('busy',status.collecting); $('#scan').disabled=status.collecting; $('#sync-site').disabled=status.collecting;
+    pill.classList.toggle('busy',status.collecting); ['#scan','#scan-full','#sync-site','#dev-incremental','#dev-full'].forEach(id=>{$(id).disabled=status.collecting;});
     if (previous && !status.collecting) {
       await loadCatalog(); notify('本轮同步已结束，数据已更新。');
       if (view === 'overview') await loadOverview();
@@ -126,10 +137,15 @@
     }
     return status;
   }
-  async function scan(id=null) {
-    $('#scan').disabled=true;
-    try {const result=await api('scan'+(id ? '?developer_id='+id : ''),'POST'); notify(`同步任务 #${result.run_id} 已开始，完成后数据会自动刷新。`); await loadStatus();}
-    finally {$('#scan').disabled=!!status?.collecting;}
+  async function scan(id=null, mode='incremental') {
+    const scope=id ? `「${developers.find(d=>d.id===id)?.name || '厂商 '+id}」` : '全部厂商';
+    if (mode==='full' && !confirm(`确定对${scope}进行全量同步吗？\n\n全量同步会重新扫描全部评价、帖子与回复，可能需要数分钟到数十分钟。日常的定时同步均为增量，通常不需要手动全量同步。`)) return;
+    $('#scan').disabled=$('#scan-full').disabled=true;
+    try {
+      const params=new URLSearchParams({mode}); if (id) params.set('developer_id',id);
+      const result=await api('scan?'+params,'POST');
+      notify(`${mode==='full'?'全量':'增量'}同步任务 #${result.run_id} 已开始，完成后数据会自动刷新。`); await loadStatus();
+    } finally {$('#scan').disabled=$('#scan-full').disabled=!!status?.collecting;}
   }
 
   /* ---------- 概览 ---------- */
@@ -159,17 +175,17 @@
     overviewData=data;
     $('#view-subtitle').textContent=`监测 ${number(data.totals.developers)} 个厂商 · ${number(data.totals.games)} 款作品`;
     const t=data.totals, reviewCount=Object.values(data.score_distribution).reduce((a,b)=>a+b,0);
-    const totalsByDay=data.daily.map(day=>KINDS.reduce((s,k)=>s+day[k],0));
+    const totalsByDay=data.daily.map(day=>KINDS.reduce((s,k)=>s+(day[k]||0),0));
     const scoreMeter=el('div','meter'), fill=el('i'); fill.style.width=`${(t.average_score||0)/5*100}%`; scoreMeter.append(fill);
     const last=data.runs.items[0], rate=data.runs.success_rate;
     $('#kpis').replaceChildren(
-      kpi('反馈总数',number(t.items),[`评价 ${number(data.counts.review)} · 帖子 ${number(data.counts.topic)}`],AdminCharts.sparkline(totalsByDay)),
-      kpi('近 7 天新增',number(t.recent_7_days),[delta(t.recent_7_days,t.previous_7_days),`上周 ${number(t.previous_7_days)}`]),
+      kpi('评价与帖子',number(t.items),[`评价 ${number(data.counts.review)}`,`帖子 ${number(data.counts.topic)}`,`回复 ${number(t.replies ?? ((data.counts.review_comment||0)+(data.counts.topic_comment||0)))}`],AdminCharts.sparkline(totalsByDay)),
+      kpi('近 7 天新增',number(t.recent_7_days),[delta(t.recent_7_days,t.previous_7_days),`上周 ${number(t.previous_7_days)}`,t.recent_replies_7_days==null?'':`新回复 ${number(t.recent_replies_7_days)}`]),
       kpi('玩家均分',t.average_score==null?'—':[(t.average_score*2).toFixed(1),'/10'],[`基于 ${number(reviewCount)} 条评价`],scoreMeter),
       kpi('最近采集',last?statuses[last.status]||'未知':'尚未运行',[last?ago(last.started_at):'等待首次运行',rate==null?'':`成功率 ${(rate*100).toFixed(0)}%`]),
     );
     AdminCharts.trend($('#trend'),data.daily); AdminCharts.scores($('#scores'),data.score_distribution,t.average_score);
-    renderGameTable(data.games); renderLatest(latest.items);
+    renderGameTable(data.games); renderLatest(latest.items); loadCore().catch(error=>AdminCharts.empty($('#core-games'),error.message));
     $('#success-rate').textContent=`最近 ${data.runs.items.length} 次 · 成功率 ${rate == null ? '—' : (rate*100).toFixed(0)+'%'}`;
     $('#run-strip').replaceChildren();
     if (!data.runs.items.length) AdminCharts.empty($('#run-strip'),'尚无运行记录。');
@@ -181,17 +197,19 @@
   function renderGameTable(rows) {
     if (!rows.length) {AdminCharts.empty($('#game-comparison'),'暂无作品，添加厂商并同步后可查看。'); return;}
     const table=el('table','game-table'), head=el('tr');
-    ['作品','TapTap 评分','玩家均分','评价','反馈'].forEach((h,i)=>{const th=el('th',i?'num':'',h); th.scope='col'; head.append(th);});
+    ['作品','TapTap 评分','玩家均分','评价','评价与帖子','回复'].forEach((h,i)=>{const th=el('th',i?'num':'',h); th.scope='col'; head.append(th);});
     const thead=el('thead'); thead.append(head); const body=el('tbody'); table.append(thead,body);
-    const max=Math.max(1,...rows.map(g=>KINDS.reduce((s,k)=>s+g.counts[k],0)));
+    const main=g=>g.main_count ?? KINDS.reduce((s,k)=>s+(g.counts[k]||0),0);
+    const max=Math.max(1,...rows.map(main));
     rows.forEach(game=>{
-      const tr=el('tr'), sum=KINDS.reduce((s,k)=>s+game.counts[k],0), cell=el('div','game-cell'), info=el('div');
+      const tr=el('tr'), sum=main(game), cell=el('div','game-cell'), info=el('div');
       const bar=el('div','stack-bar'); bar.style.width=`${Math.max(8,sum/max*100)}%`;
       KINDS.forEach(k=>{if (!game.counts[k]) return; const seg=el('i'); seg.style.width=`${game.counts[k]/sum*100}%`; seg.style.background=`var(--c-${k})`; seg.title=`${labels[k]} ${game.counts[k]}`; bar.append(seg);});
       info.append(el('strong','',game.title),bar); cell.append(image(game.icon,'',38),info);
       const td=el('td'); td.append(cell); tr.append(td);
       const rating=el('td','num'); rating.append(game.rating==null?'—':el('strong','',game.rating.toFixed(1))); tr.append(rating);
-      tr.append(el('td','num',game.average_score==null?'—':(game.average_score*2).toFixed(1)),el('td','num',number(game.review_count)),el('td','num',number(sum)));
+      tr.append(el('td','num',game.average_score==null?'—':(game.average_score*2).toFixed(1)),el('td','num',number(game.review_count)),el('td','num',number(sum)),
+        el('td','num',number(game.reply_count ?? ((game.counts.review_comment||0)+(game.counts.topic_comment||0)))));
       body.append(tr);
     });
     const scroller=el('div','table-scroll'); scroller.append(table); $('#game-comparison').replaceChildren(scroller);
@@ -237,6 +255,7 @@
     main.append(meta); if (item.title) main.append(el('h3','',item.title)); main.append(el('p','body',item.body || '（无文字内容）'));
     const media=(item.media || []).filter(url=>safeUrl(url,true)).slice(0,4);
     if (media.length) {const thumbs=el('div','thumbs'); media.forEach(url=>thumbs.append(image(url,'',64))); main.append(thumbs);}
+    if (KINDS.includes(item.kind)) main.append(replyToggle(item));
     node.append(avatar(item.author),main);
     node.addEventListener('click',()=>showItem(item)); node.addEventListener('keydown',event=>{if (event.key==='Enter' || event.key===' ') {event.preventDefault(); showItem(item);}});
     return node;
@@ -251,7 +270,38 @@
     (item.media || []).forEach(url=>{if (!safeUrl(url,true)) return; const a=link('',url); a.href=safeUrl(url,true); a.append(image(url,'反馈附件，点击查看原图',120)); media.append(a);});
     if (media.childElementCount) body.append(media);
     body.append(meta); if (safeUrl(item.url)) body.append(link('在 TapTap 查看原文 ↗',item.url,'link'));
+    if (KINDS.includes(item.kind) && replyTotal(item)) {const host=el('div','replies'); body.append(el('h3','replies-title',`回复 ${number(replyTotal(item))}`),host); loadReplies(item,host).catch(error=>host.replaceChildren(el('p','error',error.message)));}
     $('#item-dialog').showModal();
+  }
+  /* 回复挂在评价/帖子下面：点击回复数展开 */
+  const replyTotal=item=>Math.max(item.source_reply_count || 0, item.reply_count || 0);
+  function replyToggle(item) {
+    const wrap=el('div','reply-wrap'), total=replyTotal(item), toggle=el('button','reply-toggle'); toggle.type='button';
+    toggle.innerHTML='<svg><use href="#i-reply"/></svg>'; toggle.append(el('span','',number(total)));
+    toggle.setAttribute('aria-label',`${number(total)} 条回复`); toggle.setAttribute('aria-expanded','false'); toggle.disabled=!total;
+    const host=el('div','replies'); host.hidden=true;
+    toggle.addEventListener('click',guarded(async event=>{
+      event.stopPropagation(); const open=host.hidden; host.hidden=!open; toggle.setAttribute('aria-expanded',String(open));
+      if (open && !host.childElementCount) {host.append(el('p','muted small','正在加载回复…')); try {await loadReplies(item,host);} catch(error) {host.replaceChildren(el('p','error',error.message));}}
+    }));
+    host.addEventListener('click',event=>event.stopPropagation()); host.addEventListener('keydown',event=>event.stopPropagation());
+    wrap.append(toggle,host); return wrap;
+  }
+  async function loadReplies(item, host, offset=0) {
+    const data=await api(`items/${item.app_id}/${item.kind}/${encodeURIComponent(item.source_id)}/replies?limit=50&offset=${offset}`);
+    if (!offset) host.replaceChildren();
+    host.querySelector('.more-replies')?.remove();
+    if (!data.items.length && !offset) {host.append(el('p','muted small',item.source_reply_count?`TapTap 显示 ${number(item.source_reply_count)} 条回复，尚未收录，下次同步会补全。`:'暂无回复。')); return;}
+    data.items.forEach(reply=>{
+      const row=el('div','reply'), head=el('div','reply-head');
+      head.append(avatar(reply.author),el('strong','',reply.author || '匿名'));
+      if (reply.official) head.append(el('span','official','官方'));
+      head.append(el('span','when',date(reply.published_at)));
+      row.append(head,el('p','',reply.body || '（无文字内容）')); host.append(row);
+    });
+    const shown=offset+data.items.length;
+    if (shown<data.total) host.append(button(`加载更多回复（还有 ${number(data.total-shown)} 条）`,()=>loadReplies(item,host,shown),'ghost more-replies'));
+    else if (item.source_reply_count>data.total) host.append(el('p','muted small more-replies',`已收录 ${number(data.total)} 条，TapTap 显示 ${number(item.source_reply_count)} 条，其余会在后续同步中补全。`));
   }
   function download(content, name, type) {
     const url=URL.createObjectURL(new Blob([content],{type})), a=el('a'); a.href=url; a.download=name; document.body.append(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
@@ -278,6 +328,7 @@
     developers.forEach(developer=>{
       const card=el('button','dev-card'); card.type='button'; card.setAttribute('aria-current',String(developer.id===developerId));
       const info=el('div'); info.append(el('strong','',developer.name),el('span','muted',`${number(developer.game_count)} 款作品 · ${number(developer.feedback_count)} 条反馈`));
+      if (developer.is_primary) info.firstChild.append(el('span','official primary-badge','默认'));
       card.append(image(developer.logo,'',44),info,chip(developer.enabled?'ok':'interrupted'));
       card.lastChild.textContent=developer.enabled?'监测中':'已暂停';
       card.addEventListener('click',guarded(async()=>{developerId=developer.id; renderDevelopers(); await loadSite();}));
@@ -288,6 +339,8 @@
     tab=name;
     document.querySelectorAll('.tabs [role=tab]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.tab===name)));
     document.querySelectorAll('.tab-panel').forEach(p=>p.hidden=p.dataset.panel!==name);
+    clearTimeout(officialTimer);
+    if (name==='official') loadOfficial().catch(error=>$('#official-panel').replaceChildren(el('p','error',error.message)));
   }
   async function loadSite() {
     const ticket=++siteTicket, id=developerId, data=await api('sites/'+id);
@@ -340,11 +393,12 @@
     );
     if (!runs.length) AdminCharts.empty($('#runs'),'尚无运行记录。');
     else {
-      const table=el('table','runs'), head=el('tr'); ['运行','范围','开始时间','耗时','状态','新增 / 修改','异常'].forEach(h=>{const th=el('th','',h); th.scope='col'; head.append(th);});
+      const table=el('table','runs'), head=el('tr'); ['运行','范围','方式','开始时间','耗时','状态','新增 / 修改','异常'].forEach(h=>{const th=el('th','',h); th.scope='col'; head.append(th);});
       const thead=el('thead'); thead.append(head); const body=el('tbody'); table.append(thead,body);
       runs.forEach(run=>{
         const row=el('tr'), td=(v,c='')=>{const x=el('td',c); if (v instanceof Node) x.append(v); else x.textContent=v; row.append(x);};
         td('#'+run.id,'nowrap'); td(run.developer_id ? developers.find(d=>d.id===run.developer_id)?.name || '厂商 '+run.developer_id : '全部厂商');
+        const mode=el('span','chip '+(run.mode==='full'?'running':'muted'),run.mode==='full'?'全量':'增量'); td(mode);
         td(date(run.started_at),'nowrap'); td(`${Math.max(0,Math.round((run.finished_at || Date.now()/1000)-run.started_at))} 秒`,'nowrap'); td(chip(run.status)); td(`${run.new_items} / ${run.updated_items}`,'nowrap');
         const errors=runErrors(run);
         if (errors.length) {const details=el('details'), list=el('ul','run-errors'); errors.forEach(error=>list.append(el('li','',typeof error==='string'?error:JSON.stringify(error)))); details.append(el('summary','',errors.length+' 项'),list); td(details);}
@@ -355,7 +409,7 @@
     if (!status?.streams.length) AdminCharts.empty($('#streams'),'所有数据源正常。');
     (status?.streams || []).forEach(stream=>{
       const node=el('article','stream'), top=el('div','actions'); top.append(chip(stream.status),el('code','',stream.key));
-      const wording=stream.status==='pending'?'已保存分页进度，下轮继续采集':stream.status==='restricted'?'TapTap 要求登录才能展开部分楼中楼，已保存公开预览':stream.error || '数据源异常';
+      const wording=stream.status==='pending'?'已保存分页进度，下轮继续采集':stream.status==='restricted'?'部分楼中楼暂时只能获取公开预览，下次同步会重试':stream.error || '数据源异常';
       node.append(top,el('p','muted small',wording),el('p','muted small','最近尝试：'+date(stream.last_attempt))); $('#streams').append(node);
     });
     $('#deliveries').replaceChildren();
@@ -518,36 +572,223 @@
   }
   async function checkUpdates() {renderUpgrade(await api('system/check','POST')); watchUpgrade();}
 
+  /* ---------- 核心数据（官方优先，公开数据兜底） ---------- */
+  const observed=(rows,key)=>rows.filter(r=>r[key]!=null);
+  // 从第一次观测开始画线，避免把尚未记录的日子当成 0
+  const series=(rows,key,days)=>{const map=new Map(rows.map(r=>[r.day,r[key]])), start=days.findIndex(d=>map.get(d)!=null); let prev=null; return start<0?[]:days.slice(start).map(d=>{const v=map.get(d); if (v!=null) prev=v; return prev;});};
+  const spanDays=(a,b)=>Math.round((Date.parse(b)-Date.parse(a))/86400000);
+  const relative=values=>{const min=Math.min(...values); return values.map(v=>v-min);};  // 累计值以区间最小值为基线，才能看出变化
+  const increments=(rows,key,days)=>{const map=new Map(rows.map(r=>[r.day,r[key]])); let prev=null; return days.map(d=>{const v=map.get(d); if (v==null) return 0; const out=prev==null?0:Math.max(0,v-prev); prev=v; return out;});};
+  function figure(label, value, spark, sub) {
+    const node=el('div','core-fig'); node.append(el('span','label',label),el('strong','',value));
+    if (sub) node.append(el('span','muted small',sub)); if (spark) node.append(spark); return node;
+  }
+  async function loadCore() {
+    const ticket=++coreTicket, params=overviewQuery(); params.set('days',Math.max(7,days));
+    const data=await api('metrics?'+params); if (ticket!==coreTicket) return;
+    coreData=data; renderCore();
+  }
+  function renderCore() {
+    const data=coreData, host=$('#core-games'); host.replaceChildren();
+    $('#core-auth').hidden=!data.games.length || data.games.some(g=>g.official);
+    if (!data.games.length || data.games.every(g=>!g.official && !g.public_daily.length)) {AdminCharts.empty(host,'数据会在下一次同步后出现。'); $('#core-trend').replaceChildren(); return;}
+    data.games.forEach(game=>{
+      const card=el('article','core-game'), head=el('div','core-head'), figs=el('div','core-figs');
+      head.append(image(game.icon,'',36),el('strong','',game.title),el('span','chip '+(game.official?'ok':'muted'),game.official?'官方':'公开'));
+      if (game.official) {
+        const s=game.summary, d=game.official_daily;
+        const sp=key=>{const line=series(d,key,data.days); return line.length>1?AdminCharts.sparkline(relative(line)):null;};
+        figs.append(figure('下载量',s.download_count==null?'—':number(s.download_count),sp('download_count')),
+          figure('曝光量',s.page_view_count==null?'—':number(s.page_view_count),sp('page_view_count')),
+          figure('预约量',s.reserve_count==null?'—':number(s.reserve_count),sp('reserve_count')),
+          figure('官方评分',s.rating_score==null?'—':Number(s.rating_score).toFixed(1)+' /10',null,
+            s.positive_review_count==null?'':`好评 ${number(s.positive_review_count)} · 差评 ${number(s.negative_review_count)}`));
+        head.append(el('span','muted small',`官方数据更新于 ${ago(game.official_fetched_at)}`));
+      } else {
+        const d=game.public_daily, fig=(label,key,format=number)=>{
+          const rows=observed(d,key), first=rows[0], last=rows[rows.length-1], span=first&&last?spanDays(first.day,last.day):0;
+          const diff=span?last[key]-first[key]:null, line=series(d,key,data.days);
+          return figure(label,last?format(last[key]):'—',key!=='rating' && line.length>1?AdminCharts.sparkline(relative(line)):null,diff==null||key==='rating'?'':`近 ${span} 天 ${diff>=0?'+':''}${number(diff)}`);
+        };
+        figs.append(fig('关注','fans_count'),fig('浏览量','hits_total'),fig('评价数','review_count'),fig('TapTap 评分','rating',v=>Number(v).toFixed(1)+' /10'));
+      }
+      card.append(head,figs); host.append(card);
+    });
+    drawCoreTrend();
+  }
+  function drawCoreTrend() {
+    const data=coreData, host=$('#core-trend'); if (!data) return;
+    if (data.games.every(g=>!g.official_daily.length && g.public_daily.length<2)) {host.replaceChildren(); return;}
+    const official=data.games.filter(g=>g.official && g.official_daily.length);
+    if (official.length) {
+      const keys=['download_count','reserve_count'].filter(k=>official.some(g=>g.official_daily.some(r=>r[k]!=null)));
+      const use=keys.length?keys:['page_view_count'];
+      const daily=data.days.map(day=>{const row={date:day}; use.forEach(k=>{row[k]=official.reduce((sum,g)=>sum+(g.official_daily.find(r=>r.day===day)?.[k]||0),0);}); return row;});
+      const names={download_count:['下载量','var(--c-review)'],reserve_count:['预约量','var(--c-topic)'],page_view_count:['曝光量','var(--c-topic)']};
+      AdminCharts.trend(host,daily,{series:use.map(k=>[k,...names[k]]),unit:'',label:'每日官方数据',emptyText:'官方数据暂无每日趋势。'});
+    } else {
+      const sum=key=>data.days.map((day,i)=>data.games.reduce((total,g)=>total+increments(g.public_daily,key,data.days)[i],0));
+      const fans=sum('fans_count'), reviews=sum('review_count');
+      AdminCharts.trend(host,data.days.map((day,i)=>({date:day,fans:fans[i],reviews:reviews[i]})),
+        {series:[['fans','新增关注','var(--c-review)'],['reviews','新增评价','var(--c-topic)']],unit:'',label:'每日公开数据增量',emptyText:'公开数据需要累计两天以上才会显示每日增量。'});
+    }
+  }
+
+  /* ---------- 官方数据授权 ---------- */
+  async function loadOfficial() {
+    clearTimeout(officialTimer);
+    const data=await api('official'); renderOfficial(data);
+    const waiting=data.auth.status==='waiting' || data.syncing;
+    if (waiting && view==='developers' && tab==='official') officialTimer=setTimeout(()=>loadOfficial().catch(error=>notify(error.message)),3000);
+  }
+  function renderOfficial(data) {
+    const host=$('#official-panel'), nodes=[];
+    nodes.push(el('p','muted small','官方数据授权对整个系统生效（不区分厂商）：授权账号下的作品会使用 TapTap 官方开放接口的数据，其余作品继续使用公开数据。'));
+    if (!data.installed) {
+      const box=el('div','sub-card'); box.append(el('h3','','未安装官方数据组件'),el('p','muted','官方数据需要服务器上的 Node.js 组件。请在服务器上重新运行安装脚本（数据与配置会保留）：'),el('pre','command','sudo sh /opt/taptap-monitor/taptap-monitor/scripts/install.sh'));
+      host.replaceChildren(...nodes,box); return;
+    }
+    if (!data.authorized) {
+      const box=el('div','sub-card official-auth');
+      box.append(el('h3','','授权 TapTap 官方数据'),el('p','muted','授权后可获得下载量、曝光、预约、官方评分与评价趋势等公开页面上看不到的数据。只需用 TapTap App 扫码，不需要密码，授权信息只保存在你的服务器上，可随时解绑。'));
+      const auth=data.auth;
+      if (auth.status==='waiting' && /^data:image\/svg\+xml;base64,/.test(auth.qr || '')) {
+        const qr=el('div','qr-box'), img=el('img'); img.src=auth.qr; img.alt='TapTap 授权二维码'; img.width=img.height=200; qr.append(img);
+        const left=Math.max(0,Math.round((auth.expires_at || 0)-Date.now()/1000));
+        box.append(qr,el('p','muted small',`请使用 TapTap App 扫码并确认授权 · 二维码 ${Math.floor(left/60)} 分 ${left%60} 秒后过期`));
+        if (safeUrl(auth.auth_url) || /^https:\/\/[\w.-]*taptap\.(cn|com)\//.test(auth.auth_url || '')) {const a=el('a','link','在手机上打开授权链接 ↗'); a.href=auth.auth_url; a.target='_blank'; a.rel='noopener noreferrer'; box.append(a);}
+      } else {
+        if (auth.message && auth.status!=='idle') box.append(el('p',auth.status==='failed'||auth.status==='expired'?'error':'muted',auth.message));
+        const actions=el('div','actions'); actions.append(button(auth.status==='expired'||auth.status==='failed'?'重新获取二维码':'扫码授权',async()=>{renderOfficial(await api('official/auth','POST')); await loadOfficial();},'primary')); box.append(actions);
+      }
+      if (data.error) box.append(el('p','error',data.error));
+      host.replaceChildren(...nodes,box); return;
+    }
+    const box=el('div','sub-card'), head=el('div','official-account');
+    if (data.account?.avatar) head.append(image(data.account.avatar,'',40));
+    const who=el('div'); who.append(el('strong','',data.account?.name || 'TapTap 开发者账号'),el('span','muted small',data.syncing?'正在同步官方数据…':`最近同步：${data.synced_at?date(data.synced_at):'尚未同步'}`)); head.append(who,el('span','chip ok','已授权'));
+    const actions=el('div','actions');
+    actions.append(button(data.syncing?'同步中…':'立即同步',async()=>{renderOfficial(await api('official/sync','POST')); await loadOfficial();},'primary'),
+      button('解绑',async()=>{if (!confirm('确定解绑 TapTap 官方数据吗？已同步的历史数据会保留，之后将改用公开数据。')) return; renderOfficial(await api('official/auth','DELETE')); notify('已解绑官方数据。');},'ghost'));
+    if (data.syncing) actions.firstChild.disabled=true;
+    box.append(head,actions);
+    if (data.error) box.append(el('p','error',data.error));
+    const list=el('div','official-apps');
+    if (!data.apps.length) list.append(el('p','muted','该账号下没有可用的作品。'));
+    data.apps.slice().sort((a,b)=>b.monitored-a.monitored).forEach(app=>{
+      const row=el('div','official-app'); row.append(el('strong','',app.title),el('span','muted small',app.developer_name),el('span','chip '+(app.monitored?'ok':'muted'),app.monitored?'已监测':'未监测')); list.append(row);
+    });
+    box.append(el('h3','small muted','授权账号下的作品'),list,el('p','muted small','只有同时在监测列表中的作品才会同步官方数据；未监测的作品可在左侧添加其厂商。'));
+    host.replaceChildren(...nodes,box);
+  }
+
+  /* ---------- 数据洞察 ---------- */
+  const pct=v=>v==null?'—':(v*100).toFixed(v<0.1&&v>0?1:0)+'%';
+  const ten1=v=>v==null?'—':(v*2).toFixed(1);
+  async function loadInsights() {
+    const ticket=++insightTicket, params=new URLSearchParams({days:insightDays});
+    if ($('#insight-developer').value) params.set('developer_id',$('#insight-developer').value);
+    if ($('#insight-game').value) params.set('app_id',$('#insight-game').value);
+    const data=await api('insights?'+params); if (ticket!==insightTicket) return;
+    insightData=data; renderInsights();
+  }
+  function renderInsights() {
+    const data=insightData, r=data.rating, resp=data.response;
+    $('#insight-alert').hidden=!r.alert; $('#insight-alert').textContent=r.alert ? '⚠ '+r.alert : '';
+    const meter=v=>{const m=el('div','meter'), f=el('i'); f.style.width=`${(v||0)*100}%`; m.append(f); return m;};
+    $('#insight-kpis').replaceChildren(
+      kpi('贝叶斯评分',r.bayesian==null?'—':[ten1(r.bayesian),'/10'],[`原始均分 ${ten1(r.mean)}`,`${number(r.count)} 条评价`]),
+      kpi('好评率',pct(r.positive_rate),[`Wilson 下界 ${pct(r.wilson_lower)}`],meter(r.positive_rate)),
+      kpi('差评率',pct(r.negative_rate),[r.recent_mean==null?'近 7 天暂无评分':`近 7 天均分 ${ten1(r.recent_mean)}`,r.previous_mean==null?'':`前 7 天 ${ten1(r.previous_mean)}`]),
+      kpi('官方回复率',pct(resp.official_reply_rate),[`${number(resp.replied)} / ${number(resp.total)} 条评价`,resp.median_hours==null?'':`中位响应 ${resp.median_hours<1?Math.round(resp.median_hours*60)+' 分钟':resp.median_hours.toFixed(1)+' 小时'}`]),
+    );
+    drawWeekly();
+    const rating=$('#insight-rating'); rating.replaceChildren();
+    if (!r.count) AdminCharts.empty(rating,'时间范围内暂无带评分的评价。');
+    else {
+      const rows=[['贝叶斯评分',ten1(r.bayesian)+' /10',`评价越少越向整体均值 ${ten1(r.prior_mean)} 收缩（先验权重 ${r.prior_weight} 条）`],
+        ['原始均分',ten1(r.mean)+' /10',`${number(r.count)} 条评价的简单平均`],
+        ['好评率下界',pct(r.wilson_lower),`95% 置信下，真实好评率至少为该值（好评率 ${pct(r.positive_rate)}）`],
+        ['近 7 天 vs 前 7 天',`${ten1(r.recent_mean)} / ${ten1(r.previous_mean)}`,'均分下降 1 分（十分制）以上或差评率超过 40% 会触发预警']];
+      rows.forEach(([k,v,hint])=>{const row=el('div','rating-row'); row.append(el('span','muted',k),el('strong','',v),el('span','muted small',hint)); rating.append(row);});
+    }
+    const words=(host,list,tone)=>{
+      host.replaceChildren(); if (!list.length) {AdminCharts.empty(host,'样本不足，暂无显著关键词。'); return;}
+      const max=Math.max(...list.map(w=>w.count));
+      list.forEach(w=>{const row=el('div','kw '+tone), bar=el('i'); bar.style.width=`${w.count/max*100}%`; row.title=`出现在 ${w.count} 条评价中，相对倍数 ${w.lift.toFixed(1)}`; row.append(el('span','term',w.term),el('span','bar-track'),el('span','count',`${w.count} · ×${w.lift.toFixed(1)}`)); row.children[1].append(bar); host.append(row);});
+    };
+    words($('#kw-negative'),data.keywords.negative,'neg'); words($('#kw-positive'),data.keywords.positive,'pos');
+    const anomalies=$('#insight-anomalies'); anomalies.replaceChildren();
+    if (!data.anomalies.length) AdminCharts.empty(anomalies,'时间范围内没有发现异常波动。');
+    else {const list=el('div','anomaly-list'); data.anomalies.slice().reverse().forEach(a=>{const row=el('div','anomaly '+a.type); row.append(el('strong','',a.day),el('span','chip '+(a.type==='negative'?'error':'partial'),a.type==='negative'?'差评激增':'反馈激增'),el('span','',`${number(a.count)} 条，常态约 ${a.baseline.toFixed(1)} 条`),el('span','muted small',`偏离指数 ${a.score.toFixed(1)}`)); list.append(row);}); anomalies.append(list);}
+    const response=$('#insight-response'); response.replaceChildren();
+    if (!resp.total) AdminCharts.empty(response,'时间范围内暂无评价。');
+    else {const big=el('div','score-summary'); big.append(el('strong','',pct(resp.official_reply_rate)),el('span','muted',`已回复 ${number(resp.replied)} / ${number(resp.total)}`)); response.append(big,meter(resp.official_reply_rate),
+      el('p','muted small',resp.median_hours==null?'暂无官方回复记录。':`从评价发布到首次官方回复的中位时长：${resp.median_hours<1?Math.round(resp.median_hours*60)+' 分钟':resp.median_hours.toFixed(1)+' 小时'}。及时回复差评通常有助于挽回口碑。`));}
+    const hot=$('#insight-hot'); hot.replaceChildren();
+    if (!data.hot_topics.length) AdminCharts.empty(hot,'暂无回复数据。');
+    data.hot_topics.forEach(item=>{
+      const text=item.title || item.excerpt || labels[item.kind], row=el('div','hot-item'), title=safeUrl(item.url)?link(text,item.url,'link'):el('span','',text);
+      const info=el('div'); info.append(title,el('span','muted small',`${item.game_title || ''} · ${labels[item.kind]} · ${date(item.published_at)}`));
+      const count=el('span','reply-count'); count.innerHTML='<svg><use href="#i-reply"/></svg>'; count.append(number(Math.max(item.reply_count||0,item.source_reply_count||0)));
+      row.append(info,count); hot.append(row);
+    });
+    const growth=$('#insight-growth'); growth.replaceChildren();
+    if (!data.growth.length) AdminCharts.empty(growth,'需要累计两天以上的数据。');
+    else {
+      const table=el('table','game-table'), head=el('tr'); ['作品','来源','关注','浏览','评价','下载'].forEach((h,i)=>{const th=el('th',i?'num':'',h); th.scope='col'; head.append(th);});
+      const thead=el('thead'); thead.append(head); const body=el('tbody'); table.append(thead,body);
+      const fmt=v=>v==null?'—':(v>0?'+':'')+number(v);
+      data.growth.forEach(g=>{const tr=el('tr'); tr.append(el('td','',g.title),el('td','num',g.source==='official'?'官方':'公开'),el('td','num',fmt(g.fans_delta)),el('td','num',fmt(g.hits_delta)),el('td','num',fmt(g.reviews_delta)),el('td','num',fmt(g.downloads_delta))); body.append(tr);});
+      const scroller=el('div','table-scroll'); scroller.append(table); growth.append(scroller);
+    }
+    $('#insight-methods').replaceChildren(...data.methods.map(m=>{const row=el('div','method'); row.append(el('strong','',m.name),el('p','muted small',m.description)); return row;}));
+  }
+  function drawWeekly() {
+    const weekly=insightData?.weekly || [];
+    const rows=weekly.map(w=>{const pos=Math.round(w.reviews*(w.positive_rate||0)), neg=Math.round(w.reviews*(w.negative_rate||0)); return {date:w.week_start,positive:pos,neutral:Math.max(0,w.reviews-pos-neg),negative:neg};});
+    AdminCharts.trend($('#insight-weekly'),rows,{series:[['positive','好评','var(--ok)'],['neutral','中评','var(--c-review_comment)'],['negative','差评','var(--danger)']],label:'每周评价构成',emptyText:'时间范围内暂无带评分的评价。'});
+  }
+
   /* ---------- 路由与事件 ---------- */
   async function route(focus=false) {
     view=location.hash.replace(/^#\//,'').split('/')[0]; if (!views[view]) {location.hash='#/overview'; return;}
-    $('#notice').hidden=true;
+    $('#notice').hidden=true; clearTimeout(officialTimer);
     Object.keys(views).forEach(key=>{$('#view-'+key).hidden=key!==view; const nav=document.querySelector(`[data-view="${key}"]`); if (key===view) nav.setAttribute('aria-current','page'); else nav.removeAttribute('aria-current');});
     $('#view-title').textContent=views[view][0]; $('#view-subtitle').textContent=views[view][1]; document.title=views[view][0]+' · 作品监测管理'; if (focus) $('#view-title').focus();
     if ($('#workspace').hidden) return;
     if (view==='overview') await loadOverview();
     if (view==='data') await loadFeedback();
-    if (view==='developers') {await loadCatalog(); if (!developerId && developers.length) developerId=developers[0].id; renderDevelopers(); if (developerId) await loadSite();}
+    if (view==='insights') await loadInsights();
+    if (view==='developers') {await loadCatalog(); if (!developerId && developers.length) developerId=primaryId(); renderDevelopers(); if (developerId) await loadSite();}
     if (view==='runs') await loadRuns();
     if (view==='settings') {await loadSettings(); await loadUpgrade();}
   }
   async function connect() {
-    await loadCatalog();
+    await loadCatalog(); applyDefaults();
     try {if ($('#remember').checked || localStorage.getItem(KEY)) localStorage.setItem(KEY,token); else sessionStorage.setItem(KEY,token);} catch {}
-    await Promise.all([gameOptions($('#overview-developer'),$('#overview-game')),gameOptions($('#filter-developer'),$('#filter-game'))]);
+    await Promise.all([gameOptions($('#overview-developer'),$('#overview-game')),gameOptions($('#filter-developer'),$('#filter-game')),gameOptions($('#insight-developer'),$('#insight-game'))]);
     $('#login').hidden=true; $('#workspace').hidden=false; $('#login-error').textContent=''; await loadStatus();
     if (!views[location.hash.replace(/^#\//,'')]) location.hash='#/'+view; else await route();
   }
   $('#login').addEventListener('submit',guarded(async()=>{token=$('#token').value.trim(); await connect();}));
   $('#logout').addEventListener('click',()=>{forget(); token=''; location.reload();});
   $('#scan').addEventListener('click',guarded(()=>scan()));
+  $('#scan-full').addEventListener('click',guarded(()=>scan(null,'full')));
   $('#sync-site').addEventListener('click',guarded(async()=>{if (developerId) await scan(developerId);}));
+  $('#dev-incremental').addEventListener('click',guarded(async()=>{if (developerId) await scan(developerId);}));
+  $('#dev-full').addEventListener('click',guarded(async()=>{if (developerId) await scan(developerId,'full');}));
+  $('#core-auth').addEventListener('click',()=>{tab='official'; location.hash='#/developers';});
+  $('#insight-developer').addEventListener('change',guarded(async()=>{$('#insight-game').value=''; await gameOptions($('#insight-developer'),$('#insight-game')); await loadInsights();}));
+  $('#insight-game').addEventListener('change',guarded(loadInsights));
+  $('#insight-range').addEventListener('click',guarded(async event=>{const b=event.target.closest('button[data-days]'); if (!b) return; insightDays=Number(b.dataset.days); $('#insight-range').querySelectorAll('button').forEach(x=>x.setAttribute('aria-checked',String(x===b))); await loadInsights();}));
   $('#overview-developer').addEventListener('change',guarded(async()=>{$('#overview-game').value=''; await gameOptions($('#overview-developer'),$('#overview-game')); await loadOverview();}));
   $('#overview-game').addEventListener('change',guarded(loadOverview));
   $('#range').addEventListener('click',guarded(async event=>{const b=event.target.closest('button[data-days]'); if (!b) return; days=Number(b.dataset.days); $('#range').querySelectorAll('button').forEach(x=>x.setAttribute('aria-checked',String(x===b))); await loadOverview();}));
   $('#filters').addEventListener('submit',guarded(applyFilters)); $('#sort').addEventListener('change',guarded(applyFilters));
   $('#filter-developer').addEventListener('change',guarded(async()=>{$('#filter-game').value=''; await gameOptions($('#filter-developer'),$('#filter-game'));}));
-  $('#filters').addEventListener('reset',()=>{setTimeout(()=>{options($('#filter-game'),games,'全部作品','title'); filterParams=new URLSearchParams(); offset=0; loadFeedback().catch(error=>notify(error.message));},0);});
+  // 清空筛选后恢复为默认厂商
+  $('#filters').addEventListener('reset',()=>{setTimeout(async()=>{try {const id=primaryId(); $('#filter-developer').value=id?String(id):''; await gameOptions($('#filter-developer'),$('#filter-game')); filterParams=readFilters(); offset=0; await loadFeedback();} catch(error) {notify(error.message);}},0);});
   $('#previous').addEventListener('click',guarded(async()=>{offset=Math.max(0,offset-PAGE); await loadFeedback(); scrollTo({top:0});}));
   $('#next').addEventListener('click',guarded(async()=>{offset+=PAGE; await loadFeedback(); scrollTo({top:0});}));
   for (const [id,fn] of [['export-csv',exportCsv],['export-ai',exportAi]]) $('#'+id).addEventListener('click',guarded(async()=>{const node=$('#'+id); node.disabled=true; try {await fn();} finally {node.disabled=false;}}));
@@ -561,6 +802,7 @@
       if (!['www.taptap.cn','taptap.cn'].includes(url.hostname)) throw new Error('请输入 TapTap 厂商主页链接。');
       id=Number(url.pathname.match(/^\/developer\/(\d+)\/?$/)?.[1]);}
     if (!Number.isSafeInteger(id) || id<1) throw new Error('无法识别厂商 ID。');
+    if (!confirm(`添加厂商 ${id} 后会立即对它进行一次全量同步，获取全部作品、评价、帖子与回复，可能需要数分钟。确定添加吗？`)) return;
     await api('developers','POST',{id}); developerId=id; $('#developer-url').value=''; await loadCatalog(); renderDevelopers(); await loadSite(); await loadStatus(); notify('厂商已添加并开始同步，作品和官网内容将自动生成。');
   }));
   $('#rename-form').addEventListener('submit',guarded(async()=>{await api('developers/'+developerId,'PATCH',{name:field($('#rename-form'),'name').value.trim()}); await loadCatalog(); renderDevelopers(); $('#developer-title').textContent=developers.find(d=>d.id===developerId).name; notify('监测名称已保存。');}));
@@ -574,7 +816,10 @@
   $('#runtime-form').addEventListener('submit',guarded(async()=>{const save=$('#runtime-form button.primary'); save.disabled=true; try {await saveSettings();} finally {save.disabled=false;}}));
   window.addEventListener('hashchange',guarded(()=>route(true)));
   let resizeTimer;
-  window.addEventListener('resize',()=>{clearTimeout(resizeTimer); resizeTimer=setTimeout(()=>{if (view==='overview' && overviewData) AdminCharts.trend($('#trend'),overviewData.daily);},120);});
+  window.addEventListener('resize',()=>{clearTimeout(resizeTimer); resizeTimer=setTimeout(()=>{
+    if (view==='overview' && overviewData) {AdminCharts.trend($('#trend'),overviewData.daily); drawCoreTrend();}
+    if (view==='insights' && insightData) drawWeekly();
+  },120);});
   async function poll() {
     if (document.hidden || $('#workspace').hidden || polling) return; polling=true;
     try {await loadStatus(); if (view==='runs') await loadRuns(false);}

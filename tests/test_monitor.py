@@ -245,7 +245,8 @@ def test_empty_comment_response_and_restricted_previews_keep_other_comments(stor
             if path == "moment-comment/v1/by-comment":
                 raise SourceError("nested replies unavailable")
             return {"list": [
-                {"id": 1, "created_time": 1, "contents": {"text": "First"}, "comments": 3, "child_posts": []},
+                {"id": 1, "created_time": 1, "contents": {"text": "First"}, "comments": 3,
+                 "child_posts": [{"id": 11, "created_time": 1, "contents": {"text": "Public preview"}}]},
                 {"id": 2, "created_time": 1, "contents": {"text": "Second"}},
             ], "next_page": ""}
     collector = Collector(store, Source(), settings)
@@ -254,6 +255,7 @@ def test_empty_comment_response_and_restricted_previews_keep_other_comments(stor
     asyncio.run(collector.comments(replace(item(), kind='topic'), 'test/list', {"moment_id": 1}))
     assert store.stream('comments:100:topic:1')['status'] == 'restricted'
     assert store.get_item(100,'topic_comment','2')['body'] == 'Second'
+    assert store.get_item(100, 'topic_comment', '11')['body'] == 'Public preview'
 
 
 def test_nested_topic_replies_are_fetched_in_full(store, settings):
@@ -399,7 +401,8 @@ def test_dashboard_stats(settings, store):
         headers = {'Authorization': 'Bearer ' + settings.api_token}
         data = client.get('/api/stats?days=7', headers=headers).json()
         assert data['counts'] == {'review': 3, 'topic': 1, 'review_comment': 1, 'topic_comment': 1}
-        assert data['totals'] == {'developers': 2, 'games': 3, 'items': 6, 'recent_7_days': 5, 'previous_7_days': 0, 'average_score': 3}
+        assert data['totals'] == {'developers': 2, 'games': 3, 'items': 4, 'replies': 2, 'recent_replies_7_days': 2,
+                                  'recent_7_days': 3, 'previous_7_days': 0, 'average_score': 3}
         assert data['score_distribution'] == {'1': 1, '2': 0, '3': 1, '4': 0, '5': 1}
         assert len(data['daily']) == 7
         assert sum(sum(day[k] for k in data['counts']) for day in data['daily']) == 5
@@ -410,7 +413,7 @@ def test_dashboard_stats(settings, store):
         assert data['runs']['success_rate'] == .5
         assert data['runs']['items'][0]['error_count'] == 2
         filtered = client.get('/api/stats?developer_id=383549&app_id=100', headers=headers).json()
-        assert filtered['totals']['items'] == 4 and len(filtered['games']) == 1
+        assert filtered['totals']['items'] == 3 and filtered['totals']['replies'] == 1 and len(filtered['games']) == 1
         assert len(filtered['daily']) == 30
         assert client.get('/api/stats?days=6', headers=headers).status_code == 422
         assert client.get('/api/stats?days=366', headers=headers).status_code == 422
@@ -430,9 +433,9 @@ def test_search_filters_sort_and_total(settings, store):
             assert response.status_code == 200, response.text
             return response.json()
         page = search(developer_id=383549, limit=1, offset=1)
-        assert page['total'] == 4 and len(page['items']) == 1
+        assert page['total'] == 3 and len(page['items']) == 1
         assert page['items'][0]['game_title'] == 'Test Game'
-        assert search(app_id=101)['total'] == 2
+        assert search(app_id=101)['total'] == 1
         assert search(q='hElLo')['total'] == 3
         assert search(q='alice')['total'] == 1
         assert search(q='体验')['total'] == 1
@@ -441,14 +444,14 @@ def test_search_filters_sort_and_total(settings, store):
         assert search(q='_')['total'] == 0
         assert search(kind='review', score=5)['total'] == 1
         assert search(min_score=2, max_score=4)['total'] == 1
-        assert search(official=True)['total'] == 2
-        assert search(official=False)['total'] == 4
-        assert search(since=published, until=published)['total'] == 4
+        assert search(official=True)['total'] == 1
+        assert search(official=False)['total'] == 3
+        assert search(since=published, until=published)['total'] == 2
         assert [x['score'] for x in search(kind='review', sort='score_desc')['items']] == [5, 3, 1]
         assert [x['score'] for x in search(kind='review', sort='score_asc')['items']] == [1, 3, 5]
         assert search(sort='oldest')['items'][0]['source_id'] == '6'
         assert search(sort='newest')['items'][-1]['source_id'] == '6'
-        assert search(limit=1, offset=99) == {'items': [], 'total': 6}
+        assert search(limit=1, offset=99) == {'items': [], 'total': 4}
         for params in ({'score': 6}, {'sort': 'sql'}, {'limit': 501}, {'offset': -1}, {'min_score': 5, 'max_score': 1}, {'since': 2, 'until': 1}):
             assert client.get('/api/items/search', params=params, headers=headers).status_code == 422
         assert isinstance(client.get('/api/items', headers=headers).json(), list)
@@ -923,7 +926,7 @@ def test_collection_completion_starts_official_sync_when_due(settings, store, mo
     monkeypatch.setenv('TAPTAP_OFFICIAL_NODE', bridge.node)
     completed = []
 
-    async def collect(self, developer_id, run_id):
+    async def collect(self, developer_id, run_id, mode="incremental"):
         completed.append(run_id)
         self.store.finish_run(run_id, {'created': 0, 'updated': 0}, [])
         return {'run_id': run_id}
@@ -981,3 +984,296 @@ def test_official_updater_install_is_optional_and_pinned(tmp_path, monkeypatch):
     assert any('警告' in message for message in messages)
     assert calls[-1] == ['npm', 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund', '--registry=https://registry.test']
     assert not (tmp_path / 'official' / '.installed-package-lock.json').exists()
+
+
+def review_moment(source_id, comments=0, body='Review'):
+    return {'moment': {'author': {'user': {'id': 7, 'name': 'Player'}}, 'created_time': 1,
+                       'stat': {'comments': comments}, 'review': {'id': source_id, 'score': 4, 'contents': {'text': body}}}}
+
+
+def test_run_mode_migrates_existing_database(settings):
+    import sqlite3
+    with sqlite3.connect(settings.database) as db:
+        db.execute("CREATE TABLE runs (id INTEGER PRIMARY KEY,developer_id INTEGER,started_at REAL,finished_at REAL,"
+                   "status TEXT,new_items INTEGER DEFAULT 0,updated_items INTEGER DEFAULT 0,errors TEXT DEFAULT '[]')")
+        db.execute("INSERT INTO runs(id,status) VALUES(1,'ok')")
+    migrated = Store(settings.database)
+    assert migrated.query('SELECT mode FROM runs')[0]['mode'] == 'incremental'
+    full = Store(settings.database).start_run(383549, 'full')
+    assert migrated.query('SELECT mode FROM runs WHERE id=?', (full,))[0]['mode'] == 'full'
+
+
+def test_incremental_stops_at_unchanged_page_and_full_keeps_paging(store, settings):
+    class Source:
+        safe_url = staticmethod(TapTapClient.safe_url)
+        def __init__(self):
+            self.calls, self.new, self.edit = [], False, False
+        async def get(self, path, params=None):
+            self.calls.append(path)
+            if path == 'review/v2/list-by-app':
+                assert params['sort'] == 'new'
+                return {'list': [review_moment(4 if self.new else 3)], 'next_page': '/webapiv2/reviews?from=10'}
+            if path == '/webapiv2/reviews?from=10':
+                return {'list': [review_moment(2)], 'next_page': '/webapiv2/reviews?from=20'}
+            if path == '/webapiv2/reviews?from=20':
+                return {'list': [review_moment(1, body='Edited' if self.edit else 'Review')], 'next_page': ''}
+            return {'list': [], 'next_page': ''}
+    source = Source()
+    collector = Collector(store, source, settings)
+    asyncio.run(collector.reviews(100))
+    assert len([path for path in source.calls if 'reviews?' in path]) == 2
+    source.calls.clear()
+    asyncio.run(collector.reviews(100))
+    assert source.calls == ['review/v2/list-by-app']
+    source.new, source.edit = True, True
+    source.calls.clear()
+    asyncio.run(collector.reviews(100))
+    assert '/webapiv2/reviews?from=10' in source.calls and '/webapiv2/reviews?from=20' not in source.calls
+    assert store.get_item(100, 'review', '1')['body'] == 'Review'
+    collector.mode = 'full'
+    source.calls.clear()
+    asyncio.run(collector.reviews(100))
+    assert '/webapiv2/reviews?from=20' in source.calls
+    assert source.calls.count('review-comment/v1/by-review') == 3
+    assert store.get_item(100, 'review', '1')['body'] == 'Edited'
+
+
+def test_comments_only_refresh_for_changed_count_new_parent_or_incomplete_stream(store, settings):
+    class Source:
+        safe_url = staticmethod(TapTapClient.safe_url)
+        count, comment_calls, fail = 1, 0, False
+        async def get(self, path, params=None):
+            if path == 'review/v2/list-by-app':
+                return {'list': [review_moment(1, self.count)], 'next_page': ''}
+            self.comment_calls += 1
+            if self.fail:
+                raise SourceError('offline failure')
+            return {'list': [{'id': n, 'created_time': 2, 'comments': 0} for n in range(self.count)], 'next_page': ''}
+    source = Source()
+    collector = Collector(store, source, settings)
+    asyncio.run(collector.reviews(100))
+    asyncio.run(collector.reviews(100))
+    assert source.comment_calls == 1
+    source.count, source.fail = 2, True
+    asyncio.run(collector.reviews(100))
+    assert source.comment_calls == 2 and store.stream('comments:100:review:1')['status'] == 'error'
+    source.fail = False
+    asyncio.run(collector.reviews(100))
+    assert source.comment_calls == 3 and store.get_item(100, 'review', '1')['source_reply_count'] == 2
+    assert not [event for event in store.events(include_baseline=True) if event['kind'] == 'review' and event['action'] == 'updated']
+
+
+def test_nested_reply_count_skip_full_and_continuation(store, settings):
+    class Source:
+        safe_url = staticmethod(TapTapClient.safe_url)
+        nested_calls = 0
+        async def get(self, path, params=None):
+            if path == 'moment-comment/v1/by-comment':
+                self.nested_calls += 1
+                return {'list': [{'id': 11, 'created_time': 2}], 'next_page': '/webapiv2/nested?from=10'}
+            if path == '/webapiv2/nested?from=10':
+                return {'list': [{'id': 12, 'created_time': 3, 'reply_to': {'id': 1}}], 'next_page': ''}
+            return {'list': [{'id': 1, 'created_time': 1, 'comments': 2, 'child_posts': []}], 'next_page': ''}
+    source = Source()
+    parent = replace(item(), kind='topic', source_reply_count=3)
+    collector = Collector(store, source, replace(settings, max_pages=1))
+    asyncio.run(collector.comments(parent, 'comments/list', {'moment_id': 'm1'}))
+    key = 'replies:100:topic:1:1'
+    assert store.stream(key)['status'] == 'pending' and store.get_item(100, 'topic_comment', '11')
+    assert collector.needs_comments(parent, parent.payload(), 'comments:100:topic:1')
+    asyncio.run(collector.comments(parent, 'comments/list', {'moment_id': 'm1'}))
+    assert store.stream(key)['status'] == 'ok' and store.get_item(100, 'topic_comment', '12')['reply_to'] == {'id': 1}
+    calls = source.nested_calls
+    asyncio.run(collector.comments(parent, 'comments/list', {'moment_id': 'm1'}))
+    assert source.nested_calls == calls
+    collector.mode = 'full'
+    asyncio.run(collector.comments(parent, 'comments/list', {'moment_id': 'm1'}))
+    assert source.nested_calls == calls + 1
+
+
+def test_source_reply_counts_and_fingerprint(store):
+    from taptap_monitor.content import comment_item, review_item, source_reply_count
+    parsed = review_item(100, review_moment(1, 182)['moment'])
+    assert parsed.source_reply_count == 182
+    assert source_reply_count({'comments': {'count': '12'}}) == 12
+    assert source_reply_count({'comments': -1}) is None
+    comment = comment_item(100, 'topic_comment', '1', {'id': 2, 'created_time': 1, 'comments': 4, 'reply_to': 7}, 'url')
+    assert comment.source_reply_count == 4 and comment.reply_to == 7
+    store.save_item(parsed)
+    assert store.save_item(replace(parsed, source_reply_count=183)) is None
+    assert store.get_item(100, 'review', '1')['source_reply_count'] == 183
+
+
+def test_primary_order_and_nested_replies_api(settings, store):
+    published = seed_dashboard(store)
+    store.save_setting('primary_site', 383549)
+    store.save_item(replace(item(), source_id='reply1', kind='review_comment', parent_id='1', published_at=published + 2, reply_to={'id': 'author'}))
+    store.save_item(replace(item(), source_id='reply2', kind='review_comment', parent_id='1', published_at=published + 1))
+    store.save_item(replace(item(), source_id='wrong-app', app_id=101, kind='review_comment', parent_id='1'))
+    store.save_item(replace(item(), source_id='wrong-kind', kind='topic_comment', parent_id='1'))
+    with TestClient(create_app(settings, scheduler_enabled=False)) as client:
+        headers = {'Authorization': 'Bearer ' + settings.api_token}
+        developers = client.get('/api/developers', headers=headers).json()
+        assert developers[0]['id'] == 383549 and developers[0]['is_primary'] and not developers[1]['is_primary']
+        assert client.get('/api/status', headers=headers).json()['primary_developer_id'] == 383549
+        assert [g['id'] for g in client.get('/api/games', headers=headers).json()] == [102, 100, 101]
+        stats = client.get('/api/stats', headers=headers).json()
+        assert [g['app_id'] for g in stats['games']][-1] == 101
+        game = next(g for g in stats['games'] if g['app_id'] == 100)
+        assert game['main_count'] == 3 and game['reply_count'] == 4
+        main = client.get('/api/items/search?kind=review&app_id=100', headers=headers).json()['items']
+        assert next(row for row in main if row['source_id'] == '1')['reply_count'] == 2
+        assert all('source_reply_count' in row for row in main)
+        path = '/api/items/100/review/1/replies'
+        assert client.get(path).status_code == 401
+        result = client.get(path + '?limit=1&offset=1', headers=headers).json()
+        assert result['total'] == 2 and result['items'][0]['source_id'] == 'reply1'
+        assert result['items'][0]['reply_to'] == {'id': 'author'}
+        assert client.get('/api/items/100/review/missing/replies', headers=headers).status_code == 404
+        assert client.get(path + '?limit=201', headers=headers).status_code == 422
+        assert client.get('/api/items/search?kind=review_comment', headers=headers).json()['total'] == 4
+        client.put('/api/site-default/999', headers=headers)
+        assert client.get('/api/developers', headers=headers).json()[0]['id'] == 999
+        assert client.get('/api/games', headers=headers).json()[0]['id'] == 101
+
+
+def test_manual_modes_and_added_developer_queue_full(settings, store, monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+    calls = []
+    real_sleep = asyncio.sleep
+
+    async def fast_sleep(delay):
+        await real_sleep(0.01 if delay == 15 else delay)
+
+    async def collect(self, developer_id=None, run_id=None, mode='incremental'):
+        calls.append((developer_id, mode))
+        if len(calls) == 1:
+            entered.set()
+            await release.wait()
+        self.store.finish_run(run_id, {'created': 0, 'updated': 0}, [])
+        return {'run_id': run_id}
+
+    monkeypatch.setattr(Collector, 'collect', collect)
+    monkeypatch.setattr(asyncio, 'sleep', fast_sleep)
+    with TestClient(create_app(settings)) as client:
+        headers = {'Authorization': 'Bearer ' + settings.api_token}
+        client.portal.call(lambda: asyncio.wait_for(entered.wait(), 2))
+        assert calls == [(None, 'incremental')]
+        assert client.post('/api/developers', headers=headers, json={'id': 998}).status_code == 201
+        client.portal.call(release.set)
+
+        async def wait_for_added():
+            while len(calls) < 2:
+                await real_sleep(0.01)
+        client.portal.call(lambda: asyncio.wait_for(wait_for_added(), 2))
+        assert calls[1] == (998, 'full')
+        assert client.get('/api/runs', headers=headers).json()[0]['mode'] == 'full'
+        assert client.post('/api/scan?mode=unknown', headers=headers).status_code == 422
+        response = client.post('/api/scan?mode=full&developer_id=383549', headers=headers)
+        assert response.status_code == 202 and response.json()['mode'] == 'full'
+
+
+@pytest.mark.parametrize('full', [False, True])
+def test_cli_collect_mode(settings, monkeypatch, full):
+    import sys
+    from taptap_monitor import __main__ as cli
+    modes = []
+    monkeypatch.setattr(cli.Settings, 'load', lambda _: settings)
+    monkeypatch.setattr(sys, 'argv', ['taptap_monitor', 'collect'] + (['--full'] if full else []))
+
+    async def collect(self, developer_id=None, run_id=None, mode='incremental'):
+        modes.append(mode)
+        return {'errors': []}
+    monkeypatch.setattr(Collector, 'collect', collect)
+    with pytest.raises(SystemExit) as exit_code:
+        cli.main()
+    assert exit_code.value.code == 0 and modes == ['full' if full else 'incremental']
+
+
+def test_insights_rating_keywords_response_and_growth(settings, store):
+    from datetime import date, datetime, timedelta
+    from taptap_monitor.insights import analyze
+    today = date.today()
+    noon = int(datetime.combine(today, datetime.min.time()).timestamp()) + 12 * 3600
+    for n in range(6):
+        store.save_item(replace(item(), source_id=f'new{n}', score=1, body='操作卡顿 操作卡顿 crash crash 游戏没有', published_at=noon))
+    for n in range(5):
+        store.save_item(replace(item(), source_id=f'old{n}', score=5, body='画面精美 fluid', published_at=noon - 8 * 86400))
+    store.save_item(replace(item(), source_id='invalid-score', score=6, published_at=noon))
+    store.save_item(replace(item(), source_id='topic', kind='topic', published_at=noon, source_reply_count=40))
+    store.add_developer(999, 'Other')
+    store.save_game(999, {'id': 101, 'title': 'Other game'})
+    store.save_item(replace(item(), app_id=101, source_id='prior', score=5, published_at=noon - 60 * 86400))
+    for n, hours in enumerate((2, 4, 1)):
+        store.save_item(replace(item(), source_id=f'answer{n}', kind='review_comment', parent_id='new0', official=n < 2, published_at=noon + hours * 3600))
+    for n in range(4):
+        store.save_item(replace(item(), source_id=f'topicreply{n}', kind='topic_comment', parent_id='topic', published_at=noon))
+    store.save_item(replace(item(), app_id=101, source_id='wrong-app', kind='review_comment', parent_id='new1', official=True, published_at=noon))
+    first = (today - timedelta(days=9)).isoformat()
+    for app_id in (100, 101):
+        store.save_metrics(app_id, 'public', {'fans_count': 10, 'hits_total': 20, 'review_count': 2}, first)
+        store.save_metrics(app_id, 'public', {'fans_count': 15, 'hits_total': 50, 'review_count': 4})
+    store.save_metrics(100, 'official', {'page_view_count': 50, 'download_count': 10}, first)
+    store.save_metrics(100, 'official', {'page_view_count': 80, 'download_count': 14})
+    result = analyze(store, 30, app_id=100)
+    rating = result['rating']
+    assert rating['count'] == 11 and rating['mean'] == pytest.approx(31 / 11)
+    assert rating['prior_mean'] == 3 and rating['prior_weight'] == 20
+    assert rating['bayesian'] == pytest.approx(91 / 31)
+    assert rating['positive_rate'] == pytest.approx(5 / 11) and rating['negative_rate'] == pytest.approx(6 / 11)
+    assert 0 < rating['wilson_lower'] < rating['positive_rate']
+    assert rating['recent_mean'] == 1 and rating['previous_mean'] == 5 and '下降' in rating['alert']
+    assert sum(week['reviews'] for week in result['weekly']) == 12 and sum(week['topics'] for week in result['weekly']) == 1
+    negative = {row['term']: row for row in result['keywords']['negative']}
+    assert negative['操作卡顿']['count'] == negative['crash']['count'] == 6
+    assert negative['crash']['lift'] == 6 and '卡顿' not in negative and '游戏' not in negative
+    assert result['response'] == {'total': 12, 'replied': 1, 'official_reply_rate': 1 / 12, 'median_hours': 2}
+    assert result['hot_topics'][0]['source_id'] == 'topic' and result['hot_topics'][0]['reply_count'] == 4
+    assert result['hot_topics'][0]['source_reply_count'] == 40
+    assert result['growth'][0] == {'app_id': 100, 'title': 'Test Game', 'source': 'official', 'fans_delta': None,
+                                   'hits_delta': 30, 'reviews_delta': None, 'downloads_delta': 4, 'days': 10}
+    assert analyze(store, 30, developer_id=999)['growth'][0]['fans_delta'] == 5
+    assert analyze(store, 7, app_id=100)['rating']['previous_mean'] == 5
+    assert len(result['methods']) == 7
+    with TestClient(create_app(settings, scheduler_enabled=False)) as client:
+        headers = {'Authorization': 'Bearer ' + settings.api_token}
+        assert client.get('/api/insights').status_code == 401
+        assert client.get('/api/insights?app_id=100', headers=headers).json()['rating']['count'] == 11
+        for days in (6, 366):
+            assert client.get(f'/api/insights?days={days}', headers=headers).status_code == 422
+        empty = client.get('/api/insights?developer_id=888&app_id=100', headers=headers).json()
+        assert empty['rating']['count'] == 0 and empty['rating']['mean'] is None and empty['hot_topics'] == []
+
+
+def test_insights_rolling_baseline_uses_days_before_window(store):
+    from datetime import date, datetime, timedelta
+    from taptap_monitor.insights import analyze, wilson
+    today = date.today()
+    for before in range(1, 15):
+        stamp = int(datetime.combine(today - timedelta(days=before), datetime.min.time()).timestamp()) + 3600
+        for n in range(10):
+            store.save_item(replace(item(), kind='topic', source_id=f'{before}-{n}', published_at=stamp))
+    stamp = int(datetime.combine(today, datetime.min.time()).timestamp()) + 3600
+    for n in range(16):
+        store.save_item(replace(item(), kind='review' if n < 6 else 'topic', score=1 if n < 6 else None,
+                                source_id=f'today-{n}', published_at=stamp))
+    result = analyze(store, 7)
+    anomalies = [row for row in result['anomalies'] if row['day'] == today.isoformat()]
+    assert {row['type'] for row in anomalies} == {'volume', 'negative'}
+    volume = next(row for row in anomalies if row['type'] == 'volume')
+    assert volume['baseline'] == 10 and volume['count'] == 16 and volume['score'] == pytest.approx(0.6745 * 6)
+    assert wilson(0, 5) == 0 and wilson(5, 5) == pytest.approx(0.5655, abs=0.0001)
+
+
+def test_insights_empty_window_and_metric_fallback(store):
+    from datetime import date, timedelta
+    from taptap_monitor.insights import analyze
+    empty = analyze(store, 7)
+    assert empty['rating']['prior_mean'] == 3.5 and empty['rating']['bayesian'] is None
+    assert empty['response']['official_reply_rate'] is None and empty['response']['median_hours'] is None
+    assert empty['keywords'] == {'negative': [], 'positive': []} and empty['anomalies'] == []
+    store.save_metrics(100, 'official', {'download_count': 99})
+    store.save_metrics(100, 'public', {'fans_count': 2, 'hits_total': 10}, (date.today() - timedelta(days=2)).isoformat())
+    store.save_metrics(100, 'public', {'fans_count': 2, 'hits_total': 15})
+    row = analyze(store, 7)['growth'][0]
+    assert row['source'] == 'public' and row['fans_delta'] == 0 and row['hits_delta'] == 5 and row['days'] == 3

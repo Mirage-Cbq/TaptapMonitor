@@ -1,8 +1,9 @@
 (() => {
   'use strict';
   const NS = 'http://www.w3.org/2000/svg';
-  const SERIES = [['review', '评价'], ['topic', '论坛帖子'], ['review_comment', '评价回复'], ['topic_comment', '论坛回复']];
-  const color = key => `var(--c-${key})`;
+  // 回复挂在评价与帖子下面展示，不再单独作为反馈系列统计
+  const SERIES = [['review', '评价'], ['topic', '论坛帖子']];
+  const color = (key, custom) => custom || `var(--c-${key})`;
   const hiddenSeries = new Set();
   const svg = (tag, attrs = {}, text) => {
     const node = document.createElementNS(NS, tag);
@@ -20,15 +21,17 @@
     return {max: Math.ceil(value / step) * step, step};
   }
 
-  function trend(host, daily) {
-    const visible = SERIES.filter(([key]) => !hiddenSeries.has(key));
-    if (!daily.some(day => SERIES.some(([key]) => day[key]))) {empty(host, '所选范围内没有新增反馈。'); return;}
+  // config: {series: [[key, 名称, 颜色?]], unit, emptyText, label}；默认为每日新增反馈
+  function trend(host, daily, config = {}) {
+    const series = config.series || SERIES, unit = config.unit ?? ' 条';
+    const visible = series.filter(([key]) => !hiddenSeries.has(key));
+    if (!daily.some(day => series.some(([key]) => day[key]))) {empty(host, config.emptyText || '所选范围内没有新增反馈。'); return;}
     host.replaceChildren();
     const W = Math.max(320, host.clientWidth || 800), H = W < 520 ? 220 : 260, L = 34, R = 8, T = 12, B = 28;
-    const totals = daily.map(day => visible.reduce((sum, [key]) => sum + day[key], 0));
+    const totals = daily.map(day => visible.reduce((sum, [key]) => sum + (day[key] || 0), 0));
     const {max, step} = niceMax(Math.max(1, ...totals));
     const wrap = html('div', 'chart-wrap'), tip = html('div', 'chart-tip'); tip.hidden = true;
-    const chart = svg('svg', {viewBox: `0 0 ${W} ${H}`, class: 'chart', role: 'group', 'aria-label': '每日新增反馈堆叠柱状图，可用 Tab 键逐日查看'});
+    const chart = svg('svg', {viewBox: `0 0 ${W} ${H}`, class: 'chart', role: 'group', 'aria-label': (config.label || '每日新增反馈') + '堆叠柱状图，可用 Tab 键逐日查看'});
     const y = value => H - B - value / max * (H - T - B);
     for (let v = 0; v <= max; v += step) chart.append(svg('line', {x1: L, x2: W - R, y1: y(v), y2: y(v), class: 'grid'}), svg('text', {x: L - 8, y: y(v) + 4, 'text-anchor': 'end'}, v));
     const slot = (W - L - R) / daily.length, barW = Math.max(2, Math.min(28, slot * .64));
@@ -43,13 +46,13 @@
       const x = L + slot * i + (slot - barW) / 2, group = svg('g', {class: 'col', tabindex: '0', role: 'img'});
       group.append(svg('rect', {class: 'hover-bg', x: L + slot * i, y: T, width: slot, height: H - T - B, fill: 'transparent', rx: 4}));
       let acc = 0;
-      visible.forEach(([key], index) => {
+      visible.forEach(([key, , custom], index) => {
         const value = day[key]; if (!value) return;
         const top = y(acc + value), height = y(acc) - top; acc += value;
         const isTop = visible.slice(index + 1).every(([k]) => !day[k]);
-        group.append(svg('rect', {class: 'bar', x, y: top, width: barW, height: Math.max(1, height - (isTop ? 0 : 1)), rx: isTop ? Math.min(4, barW / 2) : 0, fill: color(key)}));
+        group.append(svg('rect', {class: 'bar', x, y: top, width: barW, height: Math.max(1, height - (isTop ? 0 : 1)), rx: isTop ? Math.min(4, barW / 2) : 0, fill: color(key, custom)}));
       });
-      const label = `${day.date}\n` + SERIES.map(([key, name]) => `${name}　${day[key]} 条`).join('\n') + `\n合计　${SERIES.reduce((s, [k]) => s + day[k], 0)} 条`;
+      const label = `${day.date}\n` + series.map(([key, name]) => `${name}　${(day[key] || 0).toLocaleString('zh-CN')}${unit}`).join('\n') + (series.length > 1 ? `\n合计　${series.reduce((s, [k]) => s + (day[k] || 0), 0).toLocaleString('zh-CN')}${unit}` : '');
       group.setAttribute('aria-label', label.replace(/\n/g, '，'));
       const show = () => {tip.textContent = label; tip.hidden = false; tip.style.left = `${Math.min(88, Math.max(12, (x + barW / 2) / W * 100))}%`; tip.style.top = `${Math.max(36, y(totals[i]) / H * wrap.clientHeight - 6)}px`;};
       const hide = () => {tip.hidden = true;};
@@ -59,11 +62,11 @@
     });
     wrap.append(chart, tip); host.append(wrap);
     const legend = html('div', 'legend');
-    SERIES.forEach(([key, name]) => {
-      const button = html('button'), mark = html('i'); button.type = 'button'; mark.style.background = color(key);
-      const total = daily.reduce((sum, day) => sum + day[key], 0);
-      button.append(mark, `${name} ${total}`); button.setAttribute('aria-pressed', String(!hiddenSeries.has(key)));
-      button.addEventListener('click', () => {if (hiddenSeries.has(key)) hiddenSeries.delete(key); else if (visible.length > 1) hiddenSeries.add(key); trend(host, daily);});
+    series.forEach(([key, name, custom]) => {
+      const button = html('button'), mark = html('i'); button.type = 'button'; mark.style.background = color(key, custom);
+      const total = daily.reduce((sum, day) => sum + (day[key] || 0), 0);
+      button.append(mark, `${name} ${total.toLocaleString('zh-CN')}`); button.setAttribute('aria-pressed', String(!hiddenSeries.has(key)));
+      button.addEventListener('click', () => {if (hiddenSeries.has(key)) hiddenSeries.delete(key); else if (visible.length > 1) hiddenSeries.add(key); trend(host, daily, config);});
       legend.append(button);
     });
     host.append(legend);

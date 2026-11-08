@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager, suppress
 import logging
 import os
 from pathlib import Path
+from typing import Literal
 import secrets
 import time
 import json
@@ -27,6 +28,7 @@ from .lock import ProcessLock
 from .upgrade import Updater, UpgradeError
 from .media import MediaCache
 from .official import OfficialBridge, OfficialError, OfficialService
+from .insights import analyze
 
 log = logging.getLogger(__name__)
 
@@ -90,15 +92,15 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
     official = OfficialService(store, OfficialBridge(Path(settings.database).resolve().parent))
     scan_task = None
     active_run = None
-    pending_developers = set()
+    pending_developers = {}
 
-    def start_scan(developer_id=None):
+    def start_scan(developer_id=None, mode="incremental"):
         nonlocal scan_task, active_run
         if scan_task and not scan_task.done():
             raise HTTPException(409, "A collection run is already active")
-        active_run = store.start_run(developer_id)
+        active_run = store.start_run(developer_id, mode)
         async def collect():
-            result = await collector.collect(developer_id, active_run)
+            result = await collector.collect(developer_id, active_run, mode=mode)
             official.sync_if_due()
             return result
         scan_task = asyncio.create_task(collect())
@@ -109,7 +111,8 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
         while True:
             try:
                 if pending_developers and (not scan_task or scan_task.done()):
-                    start_scan(pending_developers.pop())
+                    developer_id = next(iter(pending_developers))
+                    start_scan(developer_id, pending_developers.pop(developer_id))
                 if time.monotonic() - last_scan >= settings.poll_seconds:
                     if not scan_task or scan_task.done():
                         start_scan()
@@ -157,6 +160,11 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
         enabled = store.developers(enabled_only=True)
         return int(saved[0]["value"]) if saved else settings.site_developer_id or (enabled[0]["id"] if enabled else None)
 
+    def primary_games_first(games, key="id"):
+        primary = primary_site()
+        ids = {game["id"] for game in store.games(primary)} if primary is not None else set()
+        return sorted(games, key=lambda game: game[key] not in ids)
+
     async def authorize(authorization: str = Header(default="")):
         if not secrets.compare_digest(authorization.encode(), ("Bearer " + settings.api_token).encode()):
             raise HTTPException(401, "Valid Bearer token required", headers={"WWW-Authenticate": "Bearer"})
@@ -169,19 +177,20 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
 
     @api.get("/status")
     async def status():
-        return {**store.status(), "collecting": bool(scan_task and not scan_task.done()), "active_run": active_run,
+        return {**store.status(), "primary_developer_id": primary_site(), "collecting": bool(scan_task and not scan_task.done()), "active_run": active_run,
                 "digest_enabled": settings.digest_enabled, "astrbot_configured": bool(settings.astrbot_url and settings.astrbot_key)}
 
     @api.get("/developers")
     async def developers():
         result = store.developers()
         for developer in result:
+            developer["is_primary"] = developer["id"] == primary_site()
             developer["game_count"] = store.query("SELECT COUNT(*) n FROM developer_games WHERE developer_id=?", (developer["id"],))[0]["n"]
-            developer["feedback_count"] = store.query("SELECT COUNT(*) n FROM items WHERE app_id IN (SELECT app_id FROM developer_games WHERE developer_id=?)", (developer["id"],))[0]["n"]
+            developer["feedback_count"] = store.query("SELECT COUNT(*) n FROM items WHERE kind IN ('review','topic') AND app_id IN (SELECT app_id FROM developer_games WHERE developer_id=?)", (developer["id"],))[0]["n"]
             presentation = store.presentation(developer["id"])
             avatar = presentation["source"].get("avatar") or {}
             developer["logo"] = presentation["custom"].get("logo_url") or avatar.get("original_url") or avatar.get("url") or "/favicon.svg"
-        return result
+        return sorted(result, key=lambda developer: not developer["is_primary"])
 
     @api.post("/developers", status_code=201)
     async def add_developer(body: DeveloperCreate):
@@ -190,9 +199,9 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
         store.add_developer(body.id, body.name, body.target_umo)
         if scheduler_enabled:
             if scan_task and not scan_task.done():
-                pending_developers.add(body.id)
+                pending_developers[body.id] = "full"
             else:
-                start_scan(body.id)
+                start_scan(body.id, "full")
         return store.developer(body.id)
 
     @api.patch("/developers/{developer_id}")
@@ -205,7 +214,8 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
 
     @api.get("/games")
     async def games(developer_id: int | None = Query(None, gt=0)):
-        return store.games(developer_id)
+        games = store.games(developer_id)
+        return primary_games_first(games) if developer_id is None else games
 
     @api.get("/official")
     async def official_status():
@@ -235,7 +245,17 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
     @api.get("/metrics")
     async def metrics(days: int = Query(30, ge=7, le=180), developer_id: int | None = Query(None, gt=0),
                       app_id: int | None = Query(None, gt=0)):
-        return official.metrics(days, developer_id, app_id)
+        result = official.metrics(days, developer_id, app_id)
+        if developer_id is None:
+            result["games"] = primary_games_first(result["games"], "app_id")
+        return result
+
+    @api.get("/items/{app_id}/{kind}/{source_id}/replies")
+    async def replies(app_id: int, kind: Literal["review", "topic"], source_id: str,
+                      limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
+        if store.get_item(app_id, kind, source_id) is None:
+            raise HTTPException(404, "未找到对应的评价或帖子")
+        return store.replies(app_id, kind, source_id, limit, offset)
 
     @api.get("/items")
     async def items(developer_id: int | None = None, app_id: int | None = None,
@@ -261,7 +281,18 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
     @api.get("/stats")
     async def stats(developer_id: int | None = Query(None, gt=0), app_id: int | None = Query(None, gt=0),
                     days: int = Query(30, ge=7, le=365)):
-        return store.stats(developer_id, app_id, days)
+        result = store.stats(developer_id, app_id, days)
+        if developer_id is None:
+            result["games"] = primary_games_first(result["games"], "app_id")
+        return result
+
+    @api.get("/insights")
+    async def insights(days: int = Query(30, ge=7, le=365), developer_id: int | None = Query(None, gt=0),
+                       app_id: int | None = Query(None, gt=0)):
+        result = analyze(store, days, developer_id, app_id)
+        if developer_id is None:
+            result["growth"] = primary_games_first(result["growth"], "app_id")
+        return result
 
     def effective_settings():
         return {"values": {key: getattr(settings, key) for key in RUNTIME_FIELDS},
@@ -323,10 +354,10 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
         return {"events": rows, "next_cursor": rows[-1]["id"] if rows else after, "has_more": bool(rows and store.events(rows[-1]["id"], developer_id, 1, include_baseline))}
 
     @api.post("/scan", status_code=202)
-    async def scan(developer_id: int | None = None):
+    async def scan(developer_id: int | None = None, mode: Literal["incremental", "full"] = "incremental"):
         if developer_id is not None and not store.developer(developer_id):
             raise HTTPException(404, "Developer not found")
-        return {"run_id": start_scan(developer_id)}
+        return {"run_id": start_scan(developer_id, mode), "mode": mode}
 
     @api.get("/runs")
     async def runs(limit: int = Query(20, ge=1, le=100)):

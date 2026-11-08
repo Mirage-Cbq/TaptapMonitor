@@ -16,6 +16,7 @@ def main():
     parser.add_argument("command", choices=["serve", "collect", "status", "backup"], nargs="?", default="serve")
     parser.add_argument("--config", default=os.environ.get("MONITOR_CONFIG", "config.toml"))
     parser.add_argument("--output", help="Backup destination (backup command)")
+    parser.add_argument("--full", action="store_true", help="完整采集所有分页与回复（collect 命令）")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     # HTTP request URLs can contain query credentials for integrations.
@@ -46,7 +47,7 @@ def main():
         async def run():
             client = TapTapClient(settings)
             try:
-                result = await Collector(store, client, settings).collect()
+                result = await Collector(store, client, settings).collect(mode="full" if args.full else "incremental")
                 print(json.dumps(result, ensure_ascii=False, indent=2))
                 return bool(result["errors"])
             finally:

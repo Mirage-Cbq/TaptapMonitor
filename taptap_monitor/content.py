@@ -81,6 +81,8 @@ class Item:
     source_updated_at: int = 0
     official: bool = False
     media: list[str] | None = None
+    source_reply_count: int | None = None
+    reply_to: dict | str | int | None = None
 
     def payload(self):
         return asdict(self)
@@ -89,6 +91,22 @@ class Item:
         # Counters and timestamps change independently of content edits.
         relevant = {k: getattr(self, k) for k in ("title", "body", "score", "media", "official")}
         return hashlib.sha256(json.dumps(relevant, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
+def source_reply_count(*sources):
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        for key in ("comments", "comment_count", "reply_count"):
+            value = source.get(key)
+            if isinstance(value, dict):
+                value = value.get("count", value.get("total"))
+            try:
+                if value is not None and not isinstance(value, bool) and int(value) >= 0:
+                    return int(value)
+            except (TypeError, ValueError, OverflowError):
+                pass
+    return None
 
 
 def review_item(app_id: int, moment: dict) -> Item:
@@ -101,6 +119,7 @@ def review_item(app_id: int, moment: dict) -> Item:
         source_updated_at=moment.get("edited_time", moment["created_time"]),
         official=moment.get("is_official", False),
         media=media_of(review.get("contents")),
+        source_reply_count=source_reply_count(moment.get("stat"), review.get("stat"), review),
     )
 
 
@@ -114,4 +133,5 @@ def comment_item(app_id: int, kind: str, parent_id: str, comment: dict, url: str
         source_updated_at=comment.get("updated_time", comment["created_time"]),
         official=comment.get("is_official", False) or user.get("is_moderator", False),
         media=media_of(comment.get("contents")),
+        source_reply_count=source_reply_count(comment), reply_to=comment.get("reply_to"),
     )
