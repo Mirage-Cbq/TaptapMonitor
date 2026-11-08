@@ -273,3 +273,7 @@ deploy/          systemd 单元与 nginx 配置示例
 config.example.toml  配置模板（复制为 config.toml 使用）
 requirements.lock  Python 3.12 运行依赖与校验哈希
 ```
+
+## 许可证
+
+本项目以 [MIT 许可证](LICENSE) 开源。官方数据组件 `@taptap/instant-games-open-mcp` 由 TapTap 以 MIT 许可证发布，安装时从 npm 获取，不包含在本仓库中。本项目与 TapTap 官方无关；采集的数据版权归原作者与平台所有，请遵守 TapTap 的用户协议，合理控制采集频率。
