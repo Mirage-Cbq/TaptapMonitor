@@ -241,6 +241,8 @@ def test_empty_comment_response_and_restricted_previews_keep_other_comments(stor
         async def get(self, path, params=None):
             if params.get("review_id"):
                 return {"total": 0, "next_page": ""}
+            if path == "moment-comment/v1/by-comment":
+                raise SourceError("nested replies unavailable")
             return {"list": [
                 {"id": 1, "created_time": 1, "contents": {"text": "First"}, "comments": 3, "child_posts": []},
                 {"id": 2, "created_time": 1, "contents": {"text": "Second"}},
@@ -251,6 +253,27 @@ def test_empty_comment_response_and_restricted_previews_keep_other_comments(stor
     asyncio.run(collector.comments(replace(item(), kind='topic'), 'test/list', {"moment_id": 1}))
     assert store.stream('comments:100:topic:1')['status'] == 'restricted'
     assert store.get_item(100,'topic_comment','2')['body'] == 'Second'
+
+
+def test_nested_topic_replies_are_fetched_in_full(store, settings):
+    calls = []
+
+    class Source:
+        safe_url = staticmethod(TapTapClient.safe_url)
+        async def get(self, path, params=None):
+            calls.append((path, params))
+            if path == "moment-comment/v1/by-comment":
+                assert params == {"id": "1", "moment_id": "m1", "from": 0, "limit": 10, "sort": "created_at", "order": "asc"}
+                return {"list": [{"id": 11, "created_time": 2, "contents": {"text": "Reply A"}}], "next_page": "/webapiv2/moment-comment/v1/by-comment?from=10"}
+            if path.startswith("/webapiv2/moment-comment/v1/by-comment"):
+                return {"list": [{"id": 12, "created_time": 3, "contents": {"text": "Reply B"}}], "next_page": ""}
+            return {"list": [{"id": 1, "created_time": 1, "contents": {"text": "Top"}, "comments": 2,
+                              "child_posts": [{"id": 11, "created_time": 2, "contents": {"text": "Reply A"}}]}], "next_page": ""}
+    collector = Collector(store, Source(), settings)
+    asyncio.run(collector.comments(replace(item(), kind='topic'), 'test/list', {"moment_id": "m1"}))
+    assert store.stream('comments:100:topic:1')['status'] == 'ok'
+    assert store.get_item(100, 'topic_comment', '12')['body'] == 'Reply B'
+    assert not collector.errors
 
 
 def test_only_one_writer_process_can_own_database(settings):

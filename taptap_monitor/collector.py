@@ -153,6 +153,19 @@ class Collector:
 
         await self.walk(f"topics:{app_id}", "feed/v7/by-group", {"group_id": group_id, "type": "feed", "sort": "created", "limit": 10}, consume)
 
+    async def replies(self, moment_id, comment, max_pages=30):
+        params = {"id": str(comment.get("id_str") or comment["id"]), "moment_id": moment_id,
+                  "from": 0, "limit": 10, "sort": "created_at", "order": "asc"}
+        result, cursor = [], ""
+        for _ in range(max_pages):
+            data = await self.client.get(cursor or "moment-comment/v1/by-comment", None if cursor else params)
+            result.extend(data.get("list") or [])
+            cursor = data.get("next_page") or ""
+            if not cursor:
+                break
+            self.client.safe_url(cursor)
+        return result
+
     async def comments(self, parent, endpoint, params):
         kind = "review_comment" if parent.kind == "review" else "topic_comment"
         key = f"comments:{parent.app_id}:{parent.kind}:{parent.source_id}"
@@ -162,6 +175,12 @@ class Collector:
             for comment in data["list"]:
                 self.save(comment_item(parent.app_id, kind, parent.source_id, comment, parent.url))
                 children = comment.get("child_posts") or []
+                if comment.get("comments", 0) > len(children) and params.get("moment_id"):
+                    # The list only previews nested replies; this endpoint serves all of them anonymously.
+                    try:
+                        children = await self.replies(params["moment_id"], comment)
+                    except Exception as exc:
+                        log.warning("nested replies of %s: %s", comment.get("id"), exc)
                 for child in children:
                     self.save(comment_item(parent.app_id, kind, parent.source_id, child, parent.url))
                 if comment.get("comments", 0) > len(children):
