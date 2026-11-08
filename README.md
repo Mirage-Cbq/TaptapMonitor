@@ -43,7 +43,24 @@ ssh -L 8080:127.0.0.1:8080 root@your-server
 
 ### 公网访问
 
-建议只把官网公开给外部，后台继续通过 SSH 隧道使用。仓库里的 `deploy/nginx/taptap-monitor.conf` 已按这个思路配置，只转发官网与图片路径，其余路径一律返回 404。也可以参考 `Caddyfile.example` 用 Caddy 自动配置 HTTPS。
+仓库里提供了 nginx 配置示例，可以把官网和后台都通过 80 端口公开：
+
+```sh
+sudo apt-get install -y nginx
+sudo cp /opt/taptap-monitor/taptap-monitor/deploy/nginx/taptap-monitor.conf /etc/nginx/sites-available/taptap-monitor
+sudo ln -sf /etc/nginx/sites-available/taptap-monitor /etc/nginx/sites-enabled/taptap-monitor
+sudo rm -f /etc/nginx/sites-enabled/default && sudo nginx -t && sudo systemctl reload nginx
+```
+
+公开后，访问 `http://服务器IP/admin` 并输入管理令牌即可登录。这份配置有以下处理：
+
+- `/api/` 按来源 IP 限速，超出的请求返回 429。
+- 后台页面不会被搜索引擎收录。
+- 请求体上限放宽到 10 MB，以支持上传厂商图标。
+
+服务端口 8080 只监听本机，安全组只需要放行 22 和 80（启用 HTTPS 后再放行 443）。**建议尽快配置 HTTPS**，例如 `certbot --nginx -d 你的域名`，否则令牌会以明文传输。国内服务器使用域名前需要先完成 ICP 备案。
+
+如果只想公开官网，可以取消配置中「仅公开官网」两行的注释，后台改用 SSH 隧道访问：`ssh -L 8080:127.0.0.1:8080 root@服务器`。
 
 ### 在线升级
 
