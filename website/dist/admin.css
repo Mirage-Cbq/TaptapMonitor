@@ -224,3 +224,8 @@ dialog{padding:20px}
 
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}
 }
+.highlight-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;margin:14px 0}
+.highlight-item{display:flex;flex-direction:column;gap:10px;align-items:flex-start;border:1px solid var(--line);border-radius:8px;padding:14px 16px;background:var(--surface)}
+.highlight-item p{line-height:1.8;font-size:14px;flex:1}
+.highlight-head{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px}
+.highlight-head .stars{color:#d69a1f;letter-spacing:2px;font-size:12px}

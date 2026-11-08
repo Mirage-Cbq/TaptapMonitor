@@ -74,3 +74,36 @@ dl,dd,blockquote{margin:0}
   .about-symbol{opacity:.15}::selection{background:#526b3d;color:#fff}
   button:focus-visible,a:focus-visible,:focus-visible{outline-color:#bad58f}
 }
+
+/* 精修：卡片层次、评价可读性、详情弹窗信息优先。 */
+:root{--card:#fbfaf3;--chip:#e6ecd8;--star:#d69a1f}
+.hero{height:min(780px,88svh);min-height:640px}
+.studio-summary dl{border:0;padding:8px 0 0;gap:16px}
+.studio-summary dl>div{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:22px 24px;gap:6px}
+.studio-summary dd{font-size:34px;color:var(--green)}
+.studio-summary dt{font-size:13px}
+.review-list{gap:20px}
+.player-review{position:relative;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:24px 24px 20px;transition:transform .25s,box-shadow .25s}
+.player-review:hover{transform:translateY(-3px);box-shadow:0 16px 40px #2a3d2c14}
+.player-review:before{content:"\201C";position:absolute;top:10px;right:20px;font:72px/1 Georgia,serif;color:var(--line);pointer-events:none}
+.review-game{border:0;background:var(--chip);color:var(--green);padding:4px 11px;border-radius:999px;margin-bottom:14px;font-weight:600}
+.review-stars{color:var(--star);font-size:15px;letter-spacing:2px}
+.player-review blockquote{font-size:15px;color:var(--ink)}
+.detail-reviews .player-review{padding:20px}
+.dialog-image{max-height:min(40svh,360px);object-position:center 18%}
+#dialog-stats span:not(.rating-badge){background:var(--card);border:1px solid var(--line);border-radius:999px;padding:4px 11px}
+.dialog-actions{position:sticky;bottom:0;z-index:1;background:var(--paper);margin:28px -36px 0;padding:16px 36px 18px;box-shadow:0 -12px 24px -20px #0005}
+.dialog-actions .share-status{flex-basis:100%;margin:0;min-height:0}
+.dialog-actions .share-status:empty{display:none}
+@media(max-width:850px){.studio-summary dl>div{flex-basis:calc(50% - 8px)}}
+@media(max-width:560px){
+  .hero{height:auto;min-height:0}
+  .studio-summary dl{gap:12px}.studio-summary dl>div{padding:16px 18px}.studio-summary dd{font-size:28px}
+  .dialog-actions{margin-inline:-23px;padding-inline:23px}
+  .player-review{padding:20px}
+}
+@media(prefers-color-scheme:dark){
+  :root{--card:#1e3027;--chip:#2c4230;--star:#e8b44c}
+  .player-review:hover{box-shadow:0 16px 40px #0005}
+}
+@media(prefers-reduced-motion:reduce){.player-review:hover{transform:none}}

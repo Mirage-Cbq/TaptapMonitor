@@ -15,6 +15,8 @@ from PIL import Image, UnidentifiedImageError
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
+from typing import Annotated
+
 from pydantic import BaseModel, Field
 
 from .client import TapTapClient
@@ -44,6 +46,7 @@ class DeveloperUpdate(BaseModel):
 class SiteUpdate(BaseModel):
     published: bool | None = None
     show_reviews: bool | None = None
+    hidden_reviews: list[Annotated[str, Field(min_length=1, max_length=40)]] | None = Field(default=None, max_length=500)
     display_name: str | None = Field(default=None, max_length=120)
     tagline: str | None = Field(default=None, max_length=120)
     intro: str | None = Field(default=None, max_length=1000)

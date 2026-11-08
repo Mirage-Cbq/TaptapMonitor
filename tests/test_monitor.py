@@ -601,6 +601,13 @@ def test_site_data_review_highlights(store, settings, monkeypatch):
         assert len(client.get('/api/sites/383549', headers=headers).json()['highlights']) == 6
         assert client.patch('/api/sites/383549', headers=headers, json={'show_reviews': True}).status_code == 200
         assert len(client.get('/public/site?developer_id=383549').json()['highlights']) == 6
+        # Admins can hide individual testimonials; questions never qualify.
+        store.save_item(replace(good, source_id='question', published_at=500, body='请问这个建筑怎么拆掉呢？'))
+        assert 'question' not in {r['id'] for r in client.get('/public/site?developer_id=383549').json()['highlights']}
+        assert client.patch('/api/sites/383549', headers=headers, json={'hidden_reviews': ['good-7', 'good-6']}).status_code == 200
+        shown = client.get('/public/site?developer_id=383549').json()['highlights']
+        assert [r['id'] for r in shown] == ['good-5', 'good-4', 'good-3', 'good-2', 'good-1', 'good-0']
+        assert client.patch('/api/sites/383549', headers=headers, json={'hidden_reviews': ['x' * 41]}).status_code == 422
 
 
 def test_public_page_og_image_and_json_ld_escaping(store, settings):
@@ -635,7 +642,9 @@ def test_public_page_og_image_and_json_ld_escaping(store, settings):
             embedded = re.search(r'<script id="site-data" type="application/json">(.*?)</script>', html, re.S)[1]
             assert json.loads(embedded)['games'][0]['description'].startswith('第一行\n第二行')
             for image_tag in re.findall(r'<img\b[^>]*>', html):
-                assert all(attribute in image_tag for attribute in ('loading="lazy"', 'width=', 'height=', 'referrerpolicy="no-referrer"'))
+                # The hero logo is the largest above-the-fold image, so it loads eagerly.
+                loading = 'fetchpriority="high"' if 'hero-logo' in image_tag else 'loading="lazy"'
+                assert all(attribute in image_tag for attribute in (loading, 'width=', 'height=', 'referrerpolicy="no-referrer"'))
         store.save_presentation(383549, {'visible': False}, 100)
         empty = client.get('/')
         assert empty.status_code == 200

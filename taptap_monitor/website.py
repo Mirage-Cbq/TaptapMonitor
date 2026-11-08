@@ -1,3 +1,4 @@
+import json
 import math
 
 from .content import text_of
@@ -59,7 +60,7 @@ def site_data(store, developer_id, include_hidden=False):
     highlights = []
     if show_reviews or include_hidden:
         rows = store.query("""
-            SELECT i.app_id AS game_id, json_extract(i.payload,'$.author') AS author,
+            SELECT i.source_id AS id, i.app_id AS game_id, json_extract(i.payload,'$.author') AS author,
                    json_extract(i.payload,'$.score') AS score,
                    trim(json_extract(i.payload,'$.body')) AS body,
                    json_extract(i.payload,'$.published_at') AS published_at,
@@ -71,9 +72,12 @@ def site_data(store, developer_id, include_hidden=False):
               AND json_extract(i.payload,'$.score') BETWEEN 4 AND 5
               AND COALESCE(json_extract(i.payload,'$.official'),0)=0
               AND length(trim(json_extract(i.payload,'$.body'))) BETWEEN 12 AND 400
+              -- Questions are support requests rather than testimonials.
+              AND instr(json_extract(i.payload,'$.body'),'?')=0 AND instr(json_extract(i.payload,'$.body'),'？')=0
+              AND i.source_id NOT IN (SELECT value FROM json_each(?))
             ORDER BY json_extract(i.payload,'$.published_at') DESC, i.source_id DESC
             LIMIT 6
-        """, (developer_id,))
+        """, (developer_id, json.dumps([str(x) for x in custom.get("hidden_reviews", [])])))
         titles = {game["id"]: game["title"] for game in games}
         for row in rows:
             body = row.pop("body")

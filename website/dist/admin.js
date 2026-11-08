@@ -245,6 +245,21 @@
       details.append(summary,editor); $('#games').append(details);
     });
     if (!site.games.length) AdminCharts.empty($('#games'),'还没有同步到作品，点击“立即同步该厂商”开始获取。');
+    renderHighlights(id);
+  }
+  function renderHighlights(id) {
+    const hidden=site.custom.hidden_reviews || [], list=$('#highlights'), actions=$('#highlight-actions');
+    const saveHidden=async next=>{await api('sites/'+id,'PATCH',{hidden_reviews:next}); await loadSite();};
+    list.replaceChildren(); actions.replaceChildren();
+    (site.highlights || []).forEach(review=>{
+      const row=el('article','highlight-item'), head=el('div','highlight-head');
+      head.append(el('strong','',review.game_title),el('span','stars','★'.repeat(review.score)),el('span','muted small',`${review.author} · ${date(review.published_at)}`));
+      row.append(head,el('p','',review.excerpt),button('在官网隐藏',async()=>{await saveHidden([...hidden,review.id]); notify('已隐藏该评价，官网将自动补位。');}));
+      list.append(row);
+    });
+    if (!(site.highlights || []).length) AdminCharts.empty(list,'暂无符合条件的玩家评价。');
+    if (site.custom.show_reviews===false) actions.append(el('p','muted small','官网当前已关闭“展示玩家评价”，以上仅为预览。'));
+    if (hidden.length) actions.append(button(`恢复已隐藏的 ${hidden.length} 条评价`,async()=>{await saveHidden([]); notify('已恢复全部隐藏评价。');}));
   }
   function runErrors(run) {try {const errors=JSON.parse(run.errors); return Array.isArray(errors)?errors:[];} catch {return ['异常记录格式无法读取'];}}
   async function loadRuns(refreshStatus=true) {

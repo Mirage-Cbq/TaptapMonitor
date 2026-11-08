@@ -91,7 +91,7 @@
     $('#dialog-image').alt = game.title + '宣传图';
     $('#dialog-title').textContent = game.title;
     $('#dialog-description').textContent = game.description || '前往 TapTap，了解这款游戏。';
-    $('#dialog-tags').textContent = game.tags.join(' / ');
+    $('#dialog-tags').textContent = game.tags.filter(tag => tag !== 'TapTap制造').join(' / ');
     $('#dialog-play').href = game.url;
     $('#dialog-forum').href = game.forum_url;
     $('#share-status').textContent = '';
