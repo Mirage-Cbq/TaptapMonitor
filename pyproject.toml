@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "taptap-work-monitor"
+version = "0.1.0"
+description = "Self-hosted TapTap developer feedback monitor"
+requires-python = ">=3.12"
+dependencies = ["fastapi>=0.115,<1", "httpx>=0.28,<1", "uvicorn>=0.34,<1", "Pillow>=11,<13"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+taptap-monitor = "taptap_monitor.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["taptap_monitor*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

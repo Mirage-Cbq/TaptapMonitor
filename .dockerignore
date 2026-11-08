@@ -1,0 +1,11 @@
+.git
+.env
+.venv
+data
+logs
+output
+tests
+__pycache__
+.pytest_cache
+.playwright-mcp
+*.zip
