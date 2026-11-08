@@ -36,7 +36,7 @@ if [ -d "$APP/.git" ]; then
     g fetch --quiet origin "$BRANCH"
 elif [ -d "$APP" ]; then
     log "将现有安装转换为 git 仓库（保留 data/ 与 config.toml）"
-    [ -f "$APP/config.toml" ] && cp -n "$APP/config.toml" "$BASE/config.toml.bak" || true
+    [ -f "$APP/config.toml" ] && [ ! -e "$BASE/config.toml.bak" ] && cp "$APP/config.toml" "$BASE/config.toml.bak" || true
     g init --quiet
     g remote add origin "$REPO_URL"
     g fetch --quiet origin "$BRANCH"
