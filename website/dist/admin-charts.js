@@ -1,87 +1,101 @@
 (() => {
   'use strict';
   const NS = 'http://www.w3.org/2000/svg';
-  const series = [
-    ['review', '评价', 'var(--accent)', ''], ['topic', '论坛帖子', 'var(--blue)', '6 3'],
-    ['review_comment', '评价回复', 'var(--orange)', '2 3'], ['topic_comment', '论坛回复', 'var(--purple)', '9 3 2 3']
-  ];
-  function svgNode(tag, attrs = {}, text) {
+  const SERIES = [['review', '评价'], ['topic', '论坛帖子'], ['review_comment', '评价回复'], ['topic_comment', '论坛回复']];
+  const color = key => `var(--c-${key})`;
+  const hiddenSeries = new Set();
+  const svg = (tag, attrs = {}, text) => {
     const node = document.createElementNS(NS, tag);
     Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, value));
     if (text !== undefined) node.textContent = text;
     return node;
+  };
+  const html = (tag, className, text) => {const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node;};
+  function empty(host, text = '暂无数据，同步后会显示在这里。') {host.replaceChildren(html('p', 'empty', text));}
+  // 刻度取 1/2/5 × 10^n，保证网格数字整齐
+  function niceMax(value, ticks = 4) {
+    if (value <= ticks) return {max: Math.max(1, value), step: 1};
+    const raw = value / ticks, power = 10 ** Math.floor(Math.log10(raw));
+    const step = [1, 2, 5, 10].map(m => m * power).find(s => s >= raw);
+    return {max: Math.ceil(value / step) * step, step};
   }
-  function base(host, width, height, description) {
-    host.replaceChildren();
-    const wrap = document.createElement('div'); wrap.className = 'chart-wrap';
-    const svg = svgNode('svg', {viewBox: `0 0 ${width} ${height}`, class: 'chart', role: 'group', 'aria-label': description});
-    const tip = document.createElement('div'); tip.className = 'chart-tip'; tip.hidden = true;
-    wrap.append(svg, tip); host.append(wrap);
-    return {svg, wrap, tip, width, height};
-  }
-  function tooltip(chart, node, text, x, y) {
-    const show = () => {
-      chart.tip.textContent = text; chart.tip.hidden = false;
-      chart.tip.style.left = `${Math.min(82, Math.max(18, x / chart.width * 100))}%`;
-      chart.tip.style.top = `${Math.max(0, y / chart.height * chart.wrap.clientHeight - 38)}px`;
-    };
-    const hide = () => {chart.tip.hidden = true;};
-    node.addEventListener('pointerenter', show); node.addEventListener('pointerleave', hide);
-    node.addEventListener('focus', show); node.addEventListener('blur', hide);
-    node.setAttribute('tabindex', '0'); node.setAttribute('role', 'img'); node.setAttribute('aria-label', text);
-    node.append(svgNode('title', {}, text));
-  }
-  function empty(host, text = '暂无反馈数据，同步后将在这里显示。') {
-    const p = document.createElement('p'); p.className = 'empty'; p.textContent = text; host.replaceChildren(p);
-  }
+
   function trend(host, daily) {
-    if (!daily.some(day => series.some(([key]) => day[key]))) {empty(host); return;}
-    const W = Math.max(300, host.clientWidth || 960), H = W < 500 ? 230 : 265, L = 38, R = 16, T = 20, B = 34;
-    const chart = base(host, W, H, '每日新增反馈折线图。可用 Tab 键查看每日明细。');
-    const rawMax = Math.max(...daily.flatMap(day => series.map(([key]) => day[key])));
-    const ticks = Math.min(4, rawMax), max = Math.ceil(rawMax / ticks) * ticks;
-    const x = i => L + i / Math.max(1, daily.length - 1) * (W - L - R);
+    const visible = SERIES.filter(([key]) => !hiddenSeries.has(key));
+    if (!daily.some(day => SERIES.some(([key]) => day[key]))) {empty(host, '所选范围内没有新增反馈。'); return;}
+    host.replaceChildren();
+    const W = Math.max(320, host.clientWidth || 800), H = W < 520 ? 220 : 260, L = 34, R = 8, T = 12, B = 28;
+    const totals = daily.map(day => visible.reduce((sum, [key]) => sum + day[key], 0));
+    const {max, step} = niceMax(Math.max(1, ...totals));
+    const wrap = html('div', 'chart-wrap'), tip = html('div', 'chart-tip'); tip.hidden = true;
+    const chart = svg('svg', {viewBox: `0 0 ${W} ${H}`, class: 'chart', role: 'group', 'aria-label': '每日新增反馈堆叠柱状图，可用 Tab 键逐日查看'});
     const y = value => H - B - value / max * (H - T - B);
-    for (let n = 0; n <= ticks; n++) {
-      const value = max * n / ticks, yy = y(value);
-      chart.svg.append(svgNode('line', {x1:L, x2:W-R, y1:yy, y2:yy, class:'grid'}), svgNode('text', {x:L-10, y:yy+4, 'text-anchor':'end'}, value));
-    }
-    chart.svg.append(svgNode('text', {x:L, y:10}, '条'));
-    const labelCount = W < 500 ? 3 : 6;
-    for (let n = 0; n <= labelCount; n++) {
-      const i = Math.round(n * (daily.length - 1) / labelCount);
-      chart.svg.append(svgNode('text', {x:x(i), y:H-10, 'text-anchor':i === 0 ? 'start' : i === daily.length-1 ? 'end' : 'middle'}, daily[i].date.slice(5)));
-    }
-    series.forEach(([key, , color, dash]) => {
-      const points = daily.map((day, i) => `${x(i)},${y(day[key])}`);
-      if (key === 'review') chart.svg.append(svgNode('polygon', {points:`${L},${H-B} ${points.join(' ')} ${W-R},${H-B}`, fill:color, opacity:'.07'}));
-      chart.svg.append(svgNode('polyline', {points:points.join(' '), fill:'none', stroke:color, 'stroke-width':2.5, 'stroke-dasharray':dash, 'stroke-linejoin':'round'}));
-    });
+    for (let v = 0; v <= max; v += step) chart.append(svg('line', {x1: L, x2: W - R, y1: y(v), y2: y(v), class: 'grid'}), svg('text', {x: L - 8, y: y(v) + 4, 'text-anchor': 'end'}, v));
+    const slot = (W - L - R) / daily.length, barW = Math.max(2, Math.min(28, slot * .64));
+    const labelEvery = Math.ceil(daily.length / (W < 520 ? 4 : 8));
+    // 每隔 labelEvery 天一个日期；末日总是标注，若离上一个刻度太近则替换它
+    const last = daily.length - 1, labelled = new Set();
+    for (let i = 0; i <= last; i += labelEvery) labelled.add(i);
+    const lastTick = Math.floor(last / labelEvery) * labelEvery;
+    if (last - lastTick < labelEvery / 2) labelled.delete(lastTick);
+    labelled.add(last);
     daily.forEach((day, i) => {
-      const hit = svgNode('rect', {x:Math.max(L, x(i)-(W-L-R)/daily.length/2), y:T, width:(W-L-R)/daily.length+2, height:H-T-B, fill:'transparent'});
-      tooltip(chart, hit, `${day.date}\n${series.map(([key, label]) => `${label}：${day[key]} 条`).join('\n')}`, x(i), T + 30);
-      chart.svg.append(hit);
+      const x = L + slot * i + (slot - barW) / 2, group = svg('g', {class: 'col', tabindex: '0', role: 'img'});
+      group.append(svg('rect', {class: 'hover-bg', x: L + slot * i, y: T, width: slot, height: H - T - B, fill: 'transparent', rx: 4}));
+      let acc = 0;
+      visible.forEach(([key], index) => {
+        const value = day[key]; if (!value) return;
+        const top = y(acc + value), height = y(acc) - top; acc += value;
+        const isTop = visible.slice(index + 1).every(([k]) => !day[k]);
+        group.append(svg('rect', {class: 'bar', x, y: top, width: barW, height: Math.max(1, height - (isTop ? 0 : 1)), rx: isTop ? Math.min(4, barW / 2) : 0, fill: color(key)}));
+      });
+      const label = `${day.date}\n` + SERIES.map(([key, name]) => `${name}　${day[key]} 条`).join('\n') + `\n合计　${SERIES.reduce((s, [k]) => s + day[k], 0)} 条`;
+      group.setAttribute('aria-label', label.replace(/\n/g, '，'));
+      const show = () => {tip.textContent = label; tip.hidden = false; tip.style.left = `${Math.min(88, Math.max(12, (x + barW / 2) / W * 100))}%`; tip.style.top = `${Math.max(36, y(totals[i]) / H * wrap.clientHeight - 6)}px`;};
+      const hide = () => {tip.hidden = true;};
+      group.addEventListener('pointerenter', show); group.addEventListener('pointerleave', hide); group.addEventListener('focus', show); group.addEventListener('blur', hide);
+      chart.append(group);
+      if (labelled.has(i)) chart.append(svg('text', {x: L + slot * i + slot / 2, y: H - 8, 'text-anchor': 'middle'}, day.date.slice(5).replace('-', '/')));
     });
-    const legend = document.createElement('div'); legend.className = 'legend';
-    series.forEach(([, label, color]) => {const span = document.createElement('span'), mark = document.createElement('i'); mark.style.background = color; span.append(mark, document.createTextNode(label)); legend.append(span);});
+    wrap.append(chart, tip); host.append(wrap);
+    const legend = html('div', 'legend');
+    SERIES.forEach(([key, name]) => {
+      const button = html('button'), mark = html('i'); button.type = 'button'; mark.style.background = color(key);
+      const total = daily.reduce((sum, day) => sum + day[key], 0);
+      button.append(mark, `${name} ${total}`); button.setAttribute('aria-pressed', String(!hiddenSeries.has(key)));
+      button.addEventListener('click', () => {if (hiddenSeries.has(key)) hiddenSeries.delete(key); else if (visible.length > 1) hiddenSeries.add(key); trend(host, daily);});
+      legend.append(button);
+    });
     host.append(legend);
   }
-  function scores(host, distribution) {
-    const counts = [1,2,3,4,5].map(n => distribution[String(n)] || 0), total = counts.reduce((a,b) => a+b,0);
-    if (!total) {empty(host, '暂无带评分的评价。'); return;}
-    const W=Math.max(300,host.clientWidth || 460), H=250, L=34, T=20, B=36, R=15, ticks=Math.min(4,Math.max(...counts)), max=Math.ceil(Math.max(...counts)/ticks)*ticks;
-    const chart = base(host,W,H,'评价评分分布柱状图。可用 Tab 键查看各评分数量。');
-    for (let i=0;i<=ticks;i++) {
-      const yy=H-B-(H-T-B)*i/ticks;
-      chart.svg.append(svgNode('line',{x1:L,x2:W-R,y1:yy,y2:yy,class:'grid'}),svgNode('text',{x:L-8,y:yy+4,'text-anchor':'end'},max*i/ticks));
-    }
-    chart.svg.append(svgNode('text',{x:L,y:10},'条'));
-    counts.forEach((count,i) => {
-      const step=(W-L-R)/5, x=L+step*i+step*.2, height=count/max*(H-T-B), y=H-B-height;
-      const bar=svgNode('rect',{x,y,width:step*.6,height:Math.max(2,height),rx:3,fill:'var(--accent)',opacity:.5+i*.12});
-      tooltip(chart,bar,`${i+1} 星：${count} 条（${(count/total*100).toFixed(1)}%）`,x+step*.3,y);
-      chart.svg.append(bar,svgNode('text',{x:x+step*.3,y:H-12,'text-anchor':'middle'},`${i+1} 星`),svgNode('text',{x:x+step*.3,y:y-7,'text-anchor':'middle'},count));
-    });
+
+  function sparkline(values, className = 'spark') {
+    const W = 96, H = 34, max = Math.max(1, ...values);
+    const node = svg('svg', {viewBox: `0 0 ${W} ${H}`, class: className, 'aria-hidden': 'true', preserveAspectRatio: 'none'});
+    const points = values.map((v, i) => `${(i / Math.max(1, values.length - 1) * W).toFixed(1)},${(H - 2 - v / max * (H - 4)).toFixed(1)}`);
+    node.append(svg('polygon', {points: `0,${H} ${points.join(' ')} ${W},${H}`, fill: 'var(--accent)', opacity: '.12'}));
+    node.append(svg('polyline', {points: points.join(' '), fill: 'none', stroke: 'var(--accent)', 'stroke-width': 1.8, 'stroke-linejoin': 'round', 'vector-effect': 'non-scaling-stroke'}));
+    return node;
   }
-  window.AdminCharts = {trend, scores, empty};
+
+  // 评价为 1–5 星，统一按 ×2 显示为十分制
+  function scores(host, distribution, average) {
+    const counts = [5, 4, 3, 2, 1].map(star => [star, distribution[String(star)] || 0]);
+    const total = counts.reduce((sum, [, n]) => sum + n, 0);
+    if (!total) {empty(host, '暂无带评分的评价。'); return;}
+    host.replaceChildren();
+    const summary = html('div', 'score-summary'), strong = html('strong', '', average == null ? '—' : (average * 2).toFixed(1));
+    summary.append(strong, html('span', 'muted', `/10 · ${total} 条评价`)); host.append(summary);
+    const rows = html('div', 'score-rows');
+    const tone = star => star >= 4 ? 'var(--ok)' : star === 3 ? 'var(--c-review_comment)' : 'var(--danger)';
+    counts.forEach(([star, n]) => {
+      const row = html('div', 'score-row'), track = html('span', 'track'), fill = html('i');
+      fill.style.width = `${n / total * 100}%`; fill.style.background = tone(star); track.append(fill);
+      row.setAttribute('aria-label', `${star * 2} 分：${n} 条，占 ${(n / total * 100).toFixed(0)}%`);
+      row.append(html('span', '', `${star * 2} 分`), track, html('span', '', `${n} · ${(n / total * 100).toFixed(0)}%`)); rows.append(row);
+    });
+    host.append(rows);
+  }
+
+  window.AdminCharts = {trend, scores, sparkline, empty, SERIES};
 })();

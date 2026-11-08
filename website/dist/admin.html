@@ -6,82 +6,158 @@
   <script src="/admin-charts.js" defer></script><script src="/admin.js" defer></script>
 </head>
 <body>
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <symbol id="i-overview" viewBox="0 0 24 24"><path d="M4 13h6V4H4zM14 20h6v-9h-6zM4 20h6v-3H4zM14 7h6V4h-6z"/></symbol>
+    <symbol id="i-data" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/><path d="M8.5 10.5h7M8.5 13.5h4.5"/></symbol>
+    <symbol id="i-studio" viewBox="0 0 24 24"><path d="M3 21h18M5 21V8l7-4 7 4v13M9 21v-6h6v6"/></symbol>
+    <symbol id="i-runs" viewBox="0 0 24 24"><path d="M3 12h4l3-8 4 16 3-8h4"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+    <symbol id="i-sync" viewBox="0 0 24 24"><path d="M21 12a9 9 0 0 1-15.5 6.2M3 12a9 9 0 0 1 15.5-6.2M21 4v5h-5M3 20v-5h5"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></symbol>
+  </svg>
+
   <form id="login" class="login">
-    <img src="/favicon.svg" width="44" height="44" alt=""><p class="eyebrow">TapTap 作品监测</p><h1>登录管理后台</h1>
-    <p class="muted">查看作品反馈、管理厂商官网与采集任务。</p>
-    <label for="token">管理令牌</label><input id="token" type="password" autocomplete="off" required minlength="24" autofocus>
-    <button class="primary">连接后台</button><p class="muted small">令牌仅保存在当前标签页的会话中。</p><p id="login-error" class="error" role="alert"></p>
+    <div class="login-card">
+      <img src="/favicon.svg" width="48" height="48" alt="">
+      <h1>作品监测 · 管理后台</h1>
+      <p class="muted">查看玩家反馈、管理厂商官网与采集任务。</p>
+      <label for="token">管理令牌</label>
+      <input id="token" type="password" autocomplete="off" required minlength="24" autofocus placeholder="粘贴服务器上的 MONITOR_API_TOKEN">
+      <button class="primary block">进入后台</button>
+      <p class="muted small">令牌只保存在当前标签页，关闭即清除。</p>
+      <p id="login-error" class="error" role="alert"></p>
+    </div>
   </form>
-  <div id="workspace" hidden>
+
+  <div id="workspace" class="shell" hidden>
     <aside class="sidebar">
-      <a class="brand" href="#/overview"><img src="/favicon.svg" width="32" height="32" alt=""><span>作品监测<small>管理工作台</small></span></a>
+      <a class="brand" href="#/overview"><img src="/favicon.svg" width="34" height="34" alt=""><span>作品监测<small>管理工作台</small></span></a>
       <nav aria-label="主导航">
-        <a href="#/overview" data-view="overview"><span aria-hidden="true">◫</span>概览</a>
-        <a href="#/data" data-view="data"><span aria-hidden="true">▤</span>反馈数据</a>
-        <a href="#/developers" data-view="developers"><span aria-hidden="true">▦</span>厂商管理</a>
-        <a href="#/runs" data-view="runs"><span aria-hidden="true">◷</span>运行与日志</a>
-        <a href="#/settings" data-view="settings"><span aria-hidden="true">⚙</span>系统设置</a>
+        <a href="#/overview" data-view="overview"><svg><use href="#i-overview"/></svg><span>概览</span></a>
+        <a href="#/data" data-view="data"><svg><use href="#i-data"/></svg><span>反馈数据</span></a>
+        <a href="#/developers" data-view="developers"><svg><use href="#i-studio"/></svg><span>厂商与官网</span></a>
+        <a href="#/runs" data-view="runs"><svg><use href="#i-runs"/></svg><span>采集运行</span></a>
+        <a href="#/settings" data-view="settings"><svg><use href="#i-settings"/></svg><span>系统设置</span></a>
       </nav>
-      <div class="sidebar-footer"><a href="/" target="_blank" rel="noopener">查看默认官网 ↗</a><button id="logout">退出登录</button><small>自托管 · 本地管理</small></div>
+      <div class="sidebar-footer">
+        <a href="/" target="_blank" rel="noopener"><svg><use href="#i-external"/></svg>查看官网</a>
+        <button id="logout" type="button"><svg><use href="#i-logout"/></svg>退出登录</button>
+      </div>
     </aside>
-    <main>
-      <header class="page-heading"><div><p class="eyebrow">TapTap 作品监测</p><h1 id="view-title" tabindex="-1">概览</h1></div><div class="actions"><span id="collecting" role="status" class="muted">等待同步</span><button id="scan" class="primary">立即同步</button></div></header>
+
+    <main class="main">
+      <header class="topbar">
+        <div><h1 id="view-title" tabindex="-1">概览</h1><p id="view-subtitle" class="muted"></p></div>
+        <div class="topbar-actions"><span id="collecting" class="sync-pill" role="status">等待同步</span><button id="scan" class="primary"><svg><use href="#i-sync"/></svg>立即同步</button></div>
+      </header>
       <p id="notice" class="notice" role="status" hidden></p>
+
+      <!-- 概览 -->
       <section id="view-overview" class="view" aria-label="概览">
-        <div class="toolbar"><p class="muted">反馈按发布时间统计，日期以服务器本地时间为准。</p><div class="actions"><label>厂商<select id="overview-developer"><option value="">全部厂商</option></select></label><label>作品<select id="overview-game"><option value="">全部作品</option></select></label></div></div>
+        <div class="toolbar">
+          <div class="field-inline"><select id="overview-developer" aria-label="厂商"><option value="">全部厂商</option></select><select id="overview-game" aria-label="作品"><option value="">全部作品</option></select></div>
+          <div class="segmented" id="range" role="radiogroup" aria-label="时间范围"><button type="button" data-days="7" role="radio">7 天</button><button type="button" data-days="30" role="radio" aria-checked="true">30 天</button><button type="button" data-days="90" role="radio">90 天</button></div>
+        </div>
         <div id="kpis" class="kpis"></div>
-        <section class="panel"><div class="section-heading"><div><h2>每日新增反馈</h2><p class="muted small">各类型的每日收录内容</p></div><label>时间范围<select id="range"><option value="7">近 7 天</option><option value="30" selected>近 30 天</option><option value="90">近 90 天</option></select></label></div><div id="trend"></div></section>
-        <div class="chart-grid"><section class="panel"><h2>评价评分分布</h2><p class="muted small">仅统计 1–5 星评价</p><div id="scores"></div></section><section class="panel"><h2>作品反馈对比</h2><div id="game-comparison"></div></section></div>
-        <section class="panel"><div class="section-heading"><h2>最近采集运行</h2><a href="#/runs">查看运行与日志 →</a></div><p id="success-rate" class="muted small"></p><div id="run-strip" class="run-strip"></div></section>
+        <div class="grid-3">
+          <section class="card span-2"><div class="card-head"><div><h2>每日新增反馈</h2><p class="muted small">按发布时间统计，可点击图例切换类型</p></div></div><div id="trend"></div></section>
+          <section class="card"><div class="card-head"><div><h2>评分分布</h2><p class="muted small">十分制 · 玩家评价</p></div></div><div id="scores"></div></section>
+        </div>
+        <div class="grid-3">
+          <section class="card span-2"><div class="card-head"><div><h2>作品表现</h2><p class="muted small">TapTap 评分与收录的玩家反馈</p></div></div><div id="game-comparison"></div></section>
+          <section class="card"><div class="card-head"><div><h2>最新反馈</h2></div><a href="#/data" class="link">全部 →</a></div><div id="latest" class="latest"></div></section>
+        </div>
+        <section class="card"><div class="card-head"><div><h2>最近采集</h2><p id="success-rate" class="muted small"></p></div><a href="#/runs" class="link">运行记录 →</a></div><div id="run-strip" class="run-strip"></div></section>
       </section>
+
+      <!-- 反馈数据 -->
       <section id="view-data" class="view" aria-label="反馈数据" hidden>
-        <form id="filters" class="filter-bar">
-          <label>厂商<select name="developer_id" id="filter-developer"><option value="">全部厂商</option></select></label>
-          <label>作品<select name="app_id" id="filter-game"><option value="">全部作品</option></select></label>
-          <label>类型<select name="kind"><option value="">全部类型</option><option value="review">评价</option><option value="topic">论坛帖子</option><option value="review_comment">评价回复</option><option value="topic_comment">论坛回复</option></select></label>
-          <label>评分<select name="score"><option value="">全部评分</option><option value="1">1 星</option><option value="2">2 星</option><option value="3">3 星</option><option value="4">4 星</option><option value="5">5 星</option></select></label>
-          <label class="keyword">关键词<input name="q" type="search" placeholder="正文、标题或作者" maxlength="1000"></label>
-          <label>开始日期<input name="since" type="date"></label><label>结束日期<input name="until" type="date"></label>
-          <label>排序<select name="sort" id="sort"><option value="newest">最新发布</option><option value="oldest">最早发布</option><option value="score_desc">评分从高到低</option><option value="score_asc">评分从低到高</option></select></label>
-          <label class="check"><input name="official" type="checkbox">仅官方内容</label><div class="actions"><button class="primary">查询</button><button type="reset">清空</button></div>
-        </form>
-        <div class="section-heading"><p id="feedback-total" role="status"></p><div class="actions"><button id="export-csv">导出筛选结果 CSV</button><button id="export-ai">导出 AI 汇总数据</button></div></div>
-        <div id="feedback" class="table-scroll"></div><div class="pagination"><button id="previous">上一页</button><span id="page-label" class="muted"></span><button id="next">下一页</button></div>
-      </section>
-      <section id="view-developers" class="view" aria-label="厂商管理" hidden>
-        <form id="add-developer" class="add-form"><label for="developer-url">添加监测厂商</label><div class="actions"><input id="developer-url" placeholder="TapTap 厂商主页链接或数字 ID" required><button class="primary">添加厂商</button></div><p class="muted small">添加后自动获取作品与官网资料。</p></form>
-        <div id="developers" class="developer-grid"></div>
-        <section id="developer-detail" class="panel" hidden>
-          <div class="section-heading"><div><p class="eyebrow">厂商详情</p><h2 id="developer-title"></h2></div><a id="studio-link" target="_blank" rel="noopener">预览官网 ↗</a></div>
-          <div class="settings-grid">
-            <form id="site-form"><h3>官网设置</h3><p class="muted small">文案留空时跟随 TapTap；手动内容不受同步影响。</p>
-              <label>工作室名称<input name="display_name" maxlength="120"></label><label>首页标语<input name="tagline" maxlength="120"></label>
-              <label>简介<textarea name="intro" rows="3" maxlength="1000"></textarea></label><label>关于工作室<textarea name="about" rows="4" maxlength="2000"></textarea></label>
-              <div class="logo-upload"><img id="logo-preview" width="72" height="72" alt="当前厂商图标" referrerpolicy="no-referrer"><label>上传图标<input id="studio-logo" type="file" accept="image/png,image/jpeg,image/webp"><span class="muted small">PNG、JPEG、WebP，最大 8 MB。</span></label></div>
-              <div class="actions"><button type="button" id="upload-logo">上传并应用</button><button type="button" id="reset-logo">采用 TapTap 图标</button></div>
-              <label class="check"><input name="show_reviews" type="checkbox">展示玩家评价</label>
-              <label class="check"><input name="published" type="checkbox">公开发布官网</label><div class="actions"><button class="primary">保存官网设置</button><button type="button" id="set-primary">设为默认官网</button></div>
-            </form>
-            <div><form id="rename-form"><h3>厂商名称</h3><label>监测名称<input name="name" maxlength="120" required></label><button>保存名称</button><p class="muted small">手动名称会保留，不受同步影响；官网显示名称可单独设置。</p></form>
-              <form id="subscription-form"><h3>监测与推送</h3><label class="check"><input name="enabled" type="checkbox">启用定时监测与推送</label><label>AstrBot 接收会话<input name="target_umo" maxlength="300" placeholder="平台:消息类型:会话 ID"></label><p class="muted small">系统设置中开启简报后，向此会话推送新增反馈。接入密钥在服务器配置。</p><button>保存订阅设置</button></form>
-              <div class="help"><h3>自动同步</h3><p class="muted">自动发现新增作品，保存分页进度与反馈变化。作品展示设置按厂商分别保存。</p></div>
-            </div>
+        <form id="filters" class="card filter-card">
+          <div class="search"><svg><use href="#i-search"/></svg><input name="q" type="search" placeholder="搜索正文、标题或作者" maxlength="1000" aria-label="关键词"></div>
+          <div class="filter-row">
+            <select name="developer_id" id="filter-developer" aria-label="厂商"><option value="">全部厂商</option></select>
+            <select name="app_id" id="filter-game" aria-label="作品"><option value="">全部作品</option></select>
+            <select name="kind" aria-label="类型"><option value="">全部类型</option><option value="review">评价</option><option value="topic">论坛帖子</option><option value="review_comment">评价回复</option><option value="topic_comment">论坛回复</option></select>
+            <select name="score" aria-label="评分"><option value="">全部评分</option><option value="5">10 分</option><option value="4">8 分</option><option value="3">6 分</option><option value="2">4 分</option><option value="1">2 分</option></select>
+            <label class="date">从<input name="since" type="date"></label><label class="date">至<input name="until" type="date"></label>
+            <select name="sort" id="sort" aria-label="排序"><option value="newest">最新发布</option><option value="oldest">最早发布</option><option value="score_desc">评分从高到低</option><option value="score_asc">评分从低到高</option></select>
+            <label class="check"><input name="official" type="checkbox">仅官方</label>
+            <div class="filter-actions"><button type="reset" class="ghost">清空</button><button class="primary">查询</button></div>
           </div>
-          <h3 class="divider-heading">作品展示</h3><div id="games"></div>
-          <h3 class="divider-heading">官网评价精选</h3><p class="muted small">自动挑选近期 4–5 星、非提问类的玩家评价，最多展示 6 条。不合适的可以隐藏，系统会自动补位。</p><div id="highlights" class="highlight-list"></div><div class="actions" id="highlight-actions"></div>
-        </section>
+        </form>
+        <div class="list-head"><p id="feedback-total" role="status" class="muted"></p><div class="actions"><button id="export-csv" type="button">导出 CSV</button><button id="export-ai" type="button">导出 AI 汇总数据</button></div></div>
+        <div id="feedback" class="feed"></div>
+        <div class="pagination"><button id="previous" type="button">上一页</button><span id="page-label" class="muted"></span><button id="next" type="button">下一页</button></div>
       </section>
-      <section id="view-runs" class="view" aria-label="运行与日志" hidden>
-        <div class="section-heading"><p class="muted">页面可见时每 10 秒更新状态。</p><button id="refresh-runs">刷新记录</button></div>
-        <div id="runs" class="table-scroll"></div><section class="panel"><h2>待处理与异常数据源</h2><div id="streams"></div></section><section class="panel"><h2>最近推送记录</h2><div id="deliveries"></div></section>
+
+      <!-- 厂商与官网 -->
+      <section id="view-developers" class="view" aria-label="厂商与官网" hidden>
+        <div class="dev-layout">
+          <div class="dev-list">
+            <form id="add-developer" class="card add-form"><label for="developer-url">添加监测厂商</label><div class="add-row"><input id="developer-url" placeholder="TapTap 厂商主页链接或数字 ID" required><button class="primary">添加</button></div></form>
+            <div id="developers" class="developer-list"></div>
+          </div>
+          <section id="developer-detail" class="card dev-detail" hidden>
+            <header class="dev-head">
+              <img id="logo-preview" width="64" height="64" alt="厂商图标" referrerpolicy="no-referrer">
+              <div class="dev-title"><h2 id="developer-title"></h2><p id="developer-sync" class="muted small"></p></div>
+              <div class="actions"><a id="studio-link" class="button-like" target="_blank" rel="noopener"><svg><use href="#i-external"/></svg>预览官网</a><button id="sync-site" type="button" class="primary"><svg><use href="#i-sync"/></svg>同步官网数据</button></div>
+            </header>
+            <div class="tabs" role="tablist" aria-label="厂商设置">
+              <button type="button" role="tab" data-tab="site" aria-selected="true">官网内容</button>
+              <button type="button" role="tab" data-tab="games" aria-selected="false">作品展示</button>
+              <button type="button" role="tab" data-tab="monitor" aria-selected="false">监测与推送</button>
+            </div>
+            <div class="tab-panel" data-panel="site">
+              <form id="site-form" class="form-grid">
+                <p class="muted small span-all">文案留空时跟随 TapTap 自动内容；手动填写的内容不会被同步覆盖。</p>
+                <label>工作室名称<input name="display_name" maxlength="120"></label>
+                <label>首页标语<input name="tagline" maxlength="120"></label>
+                <label class="span-all">简介<textarea name="intro" rows="3" maxlength="1000"></textarea></label>
+                <label class="span-all">关于工作室<textarea name="about" rows="4" maxlength="2000"></textarea></label>
+                <div class="logo-upload span-all"><div><strong>厂商图标</strong><p class="muted small">PNG、JPEG、WebP，最大 8 MB，建议透明背景。</p></div><input id="studio-logo" type="file" accept="image/png,image/jpeg,image/webp" aria-label="选择图标文件"><div class="actions"><button type="button" id="upload-logo">上传并应用</button><button type="button" id="reset-logo" class="ghost">恢复 TapTap 图标</button></div></div>
+                <label class="switch span-all"><input name="published" type="checkbox"><span class="track"></span>公开发布官网</label>
+                <div class="actions span-all"><button class="primary">保存官网内容</button><button type="button" id="set-primary">设为默认官网</button></div>
+              </form>
+            </div>
+            <div class="tab-panel" data-panel="games" hidden><p class="muted small">调整作品在官网的标题、介绍、排序与是否展示。标记“精选”的作品会出现在官网的精选位。</p><div id="games" class="game-editors"></div></div>
+            <div class="tab-panel" data-panel="monitor" hidden>
+              <div class="form-grid">
+                <form id="rename-form" class="sub-card"><h3>监测名称</h3><label>名称<input name="name" maxlength="120" required></label><p class="muted small">仅用于后台显示；官网名称在“官网内容”中设置。</p><button>保存名称</button></form>
+                <form id="subscription-form" class="sub-card"><h3>定时监测与推送</h3><label class="switch"><input name="enabled" type="checkbox"><span class="track"></span>启用定时监测</label><label>AstrBot 接收会话<input name="target_umo" maxlength="300" placeholder="平台:消息类型:会话 ID"></label><p class="muted small">在“系统设置”开启简报推送后，新增反馈会推送到此会话。</p><button>保存</button></form>
+              </div>
+            </div>
+          </section>
+          <div id="developer-empty" class="card dev-detail placeholder"><p class="muted">从左侧选择一个厂商，管理它的官网内容、作品展示与监测设置。</p></div>
+        </div>
       </section>
+
+      <!-- 采集运行 -->
+      <section id="view-runs" class="view" aria-label="采集运行" hidden>
+        <div id="run-summary" class="kpis"></div>
+        <section class="card"><div class="card-head"><div><h2>运行记录</h2><p class="muted small">页面可见时每 10 秒自动刷新</p></div><button id="refresh-runs" type="button">刷新</button></div><div id="runs" class="table-scroll"></div></section>
+        <div class="grid-2">
+          <section class="card"><div class="card-head"><h2>待处理与异常数据源</h2></div><div id="streams" class="stack"></div></section>
+          <section class="card"><div class="card-head"><h2>推送记录</h2></div><div id="deliveries" class="stack"></div></section>
+        </div>
+      </section>
+
+      <!-- 系统设置 -->
       <section id="view-settings" class="view" aria-label="系统设置" hidden>
-        <p class="muted">保存后立即生效，重启后保留。恢复默认会清除该字段的后台覆盖值。</p>
-        <form id="runtime-form" novalidate><div id="runtime-fields"></div><div class="actions"><button class="primary">保存系统设置</button><span id="settings-message" role="status"></span></div></form>
-        <section class="panel"><h2>系统信息</h2><dl id="system-info" class="system-info"></dl></section>
+        <form id="runtime-form" novalidate>
+          <div id="runtime-fields" class="settings-groups"></div>
+          <div class="save-bar"><span id="settings-message" role="status" class="muted"></span><button class="primary">保存设置</button></div>
+        </form>
+        <section class="card"><div class="card-head"><h2>系统信息</h2></div><dl id="system-info" class="system-info"></dl></section>
       </section>
     </main>
   </div>
-  <dialog id="item-dialog" aria-labelledby="item-title"><div class="section-heading"><h2 id="item-title">反馈详情</h2><button id="close-dialog" aria-label="关闭反馈详情">关闭</button></div><div id="item-detail"></div></dialog>
+
+  <dialog id="item-dialog" class="drawer" aria-labelledby="item-title">
+    <div class="drawer-head"><h2 id="item-title">反馈详情</h2><button id="close-dialog" type="button" class="icon-button" aria-label="关闭">×</button></div>
+    <div id="item-detail" class="drawer-body"></div>
+  </dialog>
 </body>
 </html>
