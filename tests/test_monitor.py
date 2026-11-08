@@ -373,7 +373,7 @@ def test_dashboard_stats(settings, store):
         headers = {'Authorization': 'Bearer ' + settings.api_token}
         data = client.get('/api/stats?days=7', headers=headers).json()
         assert data['counts'] == {'review': 3, 'topic': 1, 'review_comment': 1, 'topic_comment': 1}
-        assert data['totals'] == {'developers': 2, 'games': 3, 'items': 6, 'recent_7_days': 5, 'average_score': 3}
+        assert data['totals'] == {'developers': 2, 'games': 3, 'items': 6, 'recent_7_days': 5, 'previous_7_days': 0, 'average_score': 3}
         assert data['score_distribution'] == {'1': 1, '2': 0, '3': 1, '4': 0, '5': 1}
         assert len(data['daily']) == 7
         assert sum(sum(day[k] for k in data['counts']) for day in data['daily']) == 5
@@ -551,63 +551,14 @@ def test_site_data_unrated_game(store, score):
     assert site_data(store, 383549)["games"][0]["stats"]["rating"] == {"score": None, "max": None}
 
 
-def test_site_data_review_highlights(store, settings, monkeypatch):
-    store.add_developer(999, '其他工作室')
-    store.save_game(999, {"id": 101, "title": "其他作品"})
-    store.save_game(383549, {"id": 102, "title": "隐藏作品"})
-    store.save_presentation(383549, {"visible": False}, 102)
-    store.save_presentation(383549, {"title": "官网作品名"}, 100)
-    good = replace(item(), author='玩家昵称', score=5, body='这是一段足够长的真实玩家评价。')
-    for n, changes in enumerate([
-        {"score": 3}, {"official": True}, {"kind": "topic"}, {"kind": "review_comment"},
-        {"kind": "topic_comment"}, {"body": "太短"}, {"body": "长" * 401},
-        {"app_id": 101}, {"app_id": 102},
-    ]):
-        store.save_item(replace(good, source_id=f'bad-{n}', published_at=9999, **changes))
-    # Enough eligible records to exercise both the SQL limit and recency ordering.
-    for n in range(8):
-        store.save_item(replace(good, source_id=f'good-{n}', score=4 if n % 2 else 5,
-                                published_at=100 + n, body='玩' * (400 if n == 7 else 12),
-                                author='' if n == 6 else good.author))
-    queries = []
-    original_query = store.query
-    def query(sql, args=()):
-        queries.append(sql)
-        return original_query(sql, args)
-    monkeypatch.setattr(store, 'query', query)
-    data = site_data(store, 383549)
-    reviews = data['highlights']
-    assert data['show_reviews'] is True
-    assert len(reviews) == 6
-    assert [review['published_at'] for review in reviews] == list(range(107, 101, -1))
-    assert {review['game_id'] for review in reviews} == {100}
-    assert {review['game_title'] for review in reviews} == {'官网作品名'}
-    assert reviews[0]['author'] == '玩**' and reviews[1]['author'] == '匿**'
-    assert reviews[0]['excerpt'] == '玩' * 139 + '…'
-    assert reviews[-1]['excerpt'] == '玩' * 12
-    assert reviews[0]['url'] == good.url and reviews[0]['score'] == 4
-    review_queries = [sql for sql in queries if 'JOIN items' in sql]
-    assert len(review_queries) == 1 and 'json_extract' in review_queries[0] and 'LIMIT 6' in review_queries[0]
-    # Admin previews may include hidden games, but their reviews remain private.
-    assert {review['game_id'] for review in site_data(store, 383549, include_hidden=True)['highlights']} == {100}
+def test_public_site_never_exposes_player_reviews(store, settings):
+    store.save_item(replace(item(), author='玩家昵称', score=5, body='这是一段足够长的真实玩家评价内容。'))
+    assert 'highlights' not in site_data(store, 383549)
+    assert 'highlights' not in site_data(store, 383549, include_hidden=True)
     with TestClient(create_app(settings, scheduler_enabled=False)) as client:
-        headers = {'Authorization': 'Bearer ' + settings.api_token}
-        assert client.patch('/api/sites/383549', headers=headers, json={'show_reviews': False}).status_code == 200
-        assert store.presentation(383549)['custom']['show_reviews'] is False
-        queries.clear()
-        assert 'highlights' not in site_data(store, 383549)
-        assert not any('JOIN items' in sql for sql in queries)
+        assert '这是一段足够长的真实玩家评价内容' not in client.get('/').text
         assert 'highlights' not in client.get('/public/site?developer_id=383549').json()
-        assert len(client.get('/api/sites/383549', headers=headers).json()['highlights']) == 6
-        assert client.patch('/api/sites/383549', headers=headers, json={'show_reviews': True}).status_code == 200
-        assert len(client.get('/public/site?developer_id=383549').json()['highlights']) == 6
-        # Admins can hide individual testimonials; questions never qualify.
-        store.save_item(replace(good, source_id='question', published_at=500, body='请问这个建筑怎么拆掉呢？'))
-        assert 'question' not in {r['id'] for r in client.get('/public/site?developer_id=383549').json()['highlights']}
-        assert client.patch('/api/sites/383549', headers=headers, json={'hidden_reviews': ['good-7', 'good-6']}).status_code == 200
-        shown = client.get('/public/site?developer_id=383549').json()['highlights']
-        assert [r['id'] for r in shown] == ['good-5', 'good-4', 'good-3', 'good-2', 'good-1', 'good-0']
-        assert client.patch('/api/sites/383549', headers=headers, json={'hidden_reviews': ['x' * 41]}).status_code == 422
+        assert site_data(store, 383549)['synced_at'] is not None
 
 
 def test_public_page_og_image_and_json_ld_escaping(store, settings):

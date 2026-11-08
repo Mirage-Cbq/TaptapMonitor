@@ -1,88 +1,95 @@
 (() => {
   'use strict';
   const site = JSON.parse(document.querySelector('#site-data').textContent);
-  const $ = (selector) => document.querySelector(selector);
-  const make = (tag, className, text) => {const element = document.createElement(tag); if (className) element.className = className; if (text !== undefined) element.textContent = text; return element;};
+  const $ = selector => document.querySelector(selector);
+  const make = (tag, className, text) => {const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined && text !== null) node.textContent = text; return node;};
   const base = `/studio/${site.developer_id}`;
-  const highlights = site.highlights || [];
-  const count = value => value >= 10000 ? `${+(value / 10000).toFixed(1)}万` : value >= 1000 ? `${+(value / 1000).toFixed(1)}k` : value.toLocaleString('zh-CN');
-  const ratingLabel = rating => rating.score == null ? '暂无评分' : `${rating.score}${rating.max == null ? '' : ` / ${rating.max}`}`;
-  const externalLink = (label, url, className = 'text-link') => {
-    const link = make('a', className, label);
-    link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer';
-    return link;
+  const games = site.games;
+  const hiddenTags = new Set(['TapTap制造']);
+  const tagsOf = game => game.tags.filter(tag => !hiddenTags.has(tag));
+  const count = value => value >= 10000 ? `${+(value / 10000).toFixed(1)}万` : value >= 1000 ? `${+(value / 1000).toFixed(1)}k` : Number(value).toLocaleString('zh-CN');
+  const rating = game => game.stats?.rating?.score ?? null;
+  const ratingMax = game => game.stats?.rating?.max || 10;
+  const img = (src, alt, eager = false) => {
+    const node = make('img'); node.src = src || site.logo; node.alt = alt; node.width = 1920; node.height = 1080;
+    node.referrerPolicy = 'no-referrer'; node.decoding = 'async'; if (!eager) node.loading = 'lazy';
+    node.addEventListener('error', () => {if (node.src !== new URL(site.logo, location.href).href) node.src = site.logo;}, {once: true});
+    return node;
   };
+  const external = (label, url, className) => {const a = make('a', className, label); a.href = url; a.target = '_blank'; a.rel = 'noopener noreferrer'; return a;};
+
   document.documentElement.classList.add('js');
-  document.querySelectorAll('[data-studio-name]').forEach(e => e.textContent = site.name);
-  document.querySelectorAll('[data-taptap]').forEach(e => e.href = site.taptap_url);
+  document.querySelectorAll('[data-studio-name]').forEach(node => node.textContent = site.name);
+  document.querySelectorAll('[data-taptap]').forEach(node => node.href = site.taptap_url);
+  document.querySelectorAll('[data-studio-logo]').forEach(node => node.src = site.logo);
   $('#tagline').textContent = site.tagline;
   $('#studio-intro').textContent = site.intro;
   $('#about-copy').textContent = site.about;
   $('#year').textContent = new Date().getFullYear();
-  $('#game-count').textContent = String(site.games.length).padStart(2, '0');
-  document.querySelectorAll('[data-studio-logo]').forEach(image => image.src = site.logo);
-  const addMetric = (label, value) => {
+  if (site.synced_at) $('#sync-note').textContent = `作品数据由管理系统每日同步 · 最近更新 ${new Date(site.synced_at * 1000).toLocaleString('zh-CN', {hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'})}`;
+
+  // 顶栏滚动后加底色
+  const header = $('#header');
+  const onScroll = () => header.classList.toggle('scrolled', scrollY > 8);
+  addEventListener('scroll', onScroll, {passive: true}); onScroll();
+
+  // 首屏数据与封面扇形
+  const sum = key => {const values = games.map(game => game.stats?.[key]).filter(value => value != null); return values.length ? values.reduce((a, b) => a + b, 0) : null;};
+  const ratings = games.map(rating).filter(value => value != null);
+  const stats = [
+    ['作品', games.length ? String(games.length) : null],
+    ['TapTap 关注', sum('fans_count') == null ? null : count(sum('fans_count'))],
+    ['平均评分', ratings.length ? [(ratings.reduce((a, b) => a + b, 0) / ratings.length).toFixed(1), '/10'] : null],
+    ['玩家评价', sum('review_count') == null ? null : count(sum('review_count'))],
+  ];
+  stats.forEach(([label, value]) => {
     if (value == null) return;
-    const metric = make('div'); metric.append(make('dt', '', label), make('dd', '', value)); $('#studio-summary').append(metric);
-  };
-  addMetric('作品数', count(site.games.length));
-  const sumStat = key => {const values = site.games.map(game => game.stats[key]).filter(value => value != null); return values.length ? values.reduce((sum, value) => sum + value, 0) : null;};
-  const fans = sumStat('fans_count'), reviews = sumStat('review_count');
-  const ratings = site.games.map(game => game.stats.rating.score).filter(value => value != null);
-  addMetric('总关注', fans == null ? null : count(fans));
-  addMetric('平均评分', ratings.length ? (ratings.reduce((sum, value) => sum + value, 0) / ratings.length).toFixed(1) : null);
-  addMetric('玩家评价数', reviews == null ? null : count(reviews));
-  const renderStats = (container, stats, detail = false) => {
-    container.replaceChildren();
-    if (!detail && stats.rating.score != null) {
-      const badge = make('span', 'rating-badge', `★ ${ratingLabel(stats.rating)}`);
-      badge.setAttribute('aria-label', `玩家评分 ${ratingLabel(stats.rating)}`); container.append(badge);
-    }
-    const metrics = [['fans_count', '关注'], ['review_count', '评价'], ...(detail ? [['topic_count', '话题'], ['hits_total', '浏览']] : [])];
-    metrics.forEach(([key, label]) => {if (stats[key] != null) {const metric = make('span', '', `${count(stats[key])} ${label}`); metric.title = `${stats[key].toLocaleString('zh-CN')} ${label}`; container.append(metric);}});
-    container.hidden = !container.childElementCount;
-  };
-  const renderReviews = (container, reviews, showGameTitle = true) => {
-    container.replaceChildren();
-    reviews.forEach(review => {
-      const article = make('article', 'player-review');
-      if (showGameTitle) {const game = site.games.find(game => game.id === review.game_id); const link = make('a', 'review-game', review.game_title); link.href = `${base}/games/${review.game_id}`; link.addEventListener('click', event => openGameLink(event, game)); article.append(link);}
-      const stars = make('p', 'review-stars', '★'.repeat(review.score) + '☆'.repeat(5 - review.score)); stars.setAttribute('aria-label', `${review.score} 星，满分 5 星`);
-      const quote = make('blockquote', '', review.excerpt);
-      const footer = make('footer', 'review-footer'); const author = make('span', '', review.author);
-      const date = make('time', '', new Date(review.published_at * 1000).toLocaleDateString('zh-CN')); date.dateTime = new Date(review.published_at * 1000).toISOString();
-      footer.append(author, date);
-      if (/^https?:\/\//i.test(review.url || '')) footer.append(externalLink('查看原评 ↗', review.url));
-      article.append(stars, quote, footer); container.append(article);
-    });
-  };
-  const observer = new IntersectionObserver(entries => entries.forEach(entry => {if (entry.isIntersecting) {entry.target.classList.add('seen'); observer.unobserve(entry.target);}}), {threshold: .08});
-  document.querySelectorAll('.reveal').forEach(e => observer.observe(e));
-  let selected = null;
-  let returnFocus = null;
+    const item = make('div'), dd = make('dd');
+    if (Array.isArray(value)) dd.append(value[0], make('small', '', value[1])); else dd.textContent = value;
+    item.append(make('dt', '', label), dd); $('#studio-stats').append(item);
+  });
+  games.filter(game => game.cover).slice(0, 3).forEach((game, index) => {const card = make('div', 'fan-card'); card.append(img(game.cover, '', index === 0)); $('#hero-fan').append(card);});
+
+  const reveal = new IntersectionObserver(entries => entries.forEach(entry => {if (entry.isIntersecting) {entry.target.classList.add('seen'); reveal.unobserve(entry.target);}}), {threshold: .08});
+  const observe = node => reveal.observe(node);
+  document.querySelectorAll('.reveal').forEach(observe);
+
+  // 详情弹窗与地址同步
   const dialog = $('#game-dialog');
+  let selected = null, returnFocus = null;
   const updateMetadata = game => {
     document.title = (game ? game.title + ' · ' : '') + site.name;
-    document.querySelector('meta[property="og:title"]').content = document.title;
     const description = (game ? game.description : site.intro).slice(0, 200);
+    document.querySelector('meta[property="og:title"]').content = document.title;
     document.querySelector('meta[name="description"]').content = description;
     document.querySelector('meta[property="og:description"]').content = description;
     document.querySelector('meta[property="og:image"]').content = (game && game.cover) || site.logo;
   };
-  const renderRating = stats => {
+  const statPills = (container, stats, keys) => {
+    container.replaceChildren();
+    keys.forEach(([key, label]) => {if (stats?.[key]) {const pill = make('span'); pill.title = `${stats[key].toLocaleString('zh-CN')} ${label}`; pill.append(make('b', '', count(stats[key])), label); container.append(pill);}});
+    container.hidden = !container.childElementCount;
+  };
+  const scoreBlock = game => {
+    const wrap = make('div', 'score-line'), score = rating(game);
+    if (score == null) {wrap.append(make('span', 'score-big', '—'), make('span', 'muted', '暂无评分')); return wrap;}
+    const big = make('span', 'score-big', score.toFixed(1)); big.append(make('small', '', '/' + ratingMax(game)));
+    const meter = make('span', 'score-meter'), fill = make('i'); fill.style.width = `${Math.min(100, score / ratingMax(game) * 100)}%`; meter.append(fill);
+    wrap.setAttribute('aria-label', `TapTap 评分 ${score} 分，满分 ${ratingMax(game)} 分`); wrap.append(big, meter); return wrap;
+  };
+  const renderRating = game => {
     const panel = $('#dialog-rating'); panel.replaceChildren();
-    const summary = make('div', 'rating-summary'); summary.append(make('p', 'eyebrow', '玩家评分'), make('p', 'rating-value', ratingLabel(stats.rating)));
-    panel.append(summary);
-    const total = Object.values(stats.vote_info).reduce((sum, value) => sum + value, 0);
-    if (!total) {panel.append(make('p', 'review-note', '暂无星级分布')); return;}
-    const distribution = make('div', 'rating-distribution');
+    const summary = make('div'); summary.append(make('p', 'label', 'TapTap 评分'), scoreBlock(game)); panel.append(summary);
+    const votes = game.stats?.vote_info || {}, total = Object.values(votes).reduce((a, b) => a + b, 0);
+    if (!total) return;
+    const rows = make('div', 'rating-rows');
     for (let star = 5; star >= 1; star--) {
-      const votes = stats.vote_info[String(star)];
-      const row = make('div', 'rating-row'); row.setAttribute('aria-label', `${star} 星：${votes} 条，占 ${Math.round(votes / total * 100)}%`);
-      const track = make('span', 'rating-track'); const bar = make('span', 'rating-fill'); bar.style.width = `${votes / total * 100}%`; track.append(bar); track.setAttribute('aria-hidden', 'true');
-      row.append(make('span', '', `${star} 星`), track, make('span', 'rating-count', count(votes))); distribution.append(row);
+      const n = votes[String(star)] || 0, row = make('div', 'rating-row'), track = make('span', 'rating-track'), fill = make('i');
+      fill.style.width = `${n / total * 100}%`; track.append(fill); track.setAttribute('aria-hidden', 'true');
+      row.setAttribute('aria-label', `${star * 2} 分：${n} 人，占 ${Math.round(n / total * 100)}%`);
+      row.append(make('span', '', `${star * 2} 分`), track, make('span', '', count(n))); rows.append(row);
     }
-    panel.append(distribution);
+    panel.append(rows);
   };
   const showGame = (game, navigate = true) => {
     selected = game;
@@ -90,73 +97,80 @@
     $('#dialog-image').src = game.cover || game.icon || site.logo;
     $('#dialog-image').alt = game.title + '宣传图';
     $('#dialog-title').textContent = game.title;
+    $('#dialog-tags').replaceChildren(...tagsOf(game).map(tag => make('span', 'tag', tag)));
     $('#dialog-description').textContent = game.description || '前往 TapTap，了解这款游戏。';
-    $('#dialog-tags').textContent = game.tags.filter(tag => tag !== 'TapTap制造').join(' / ');
-    $('#dialog-play').href = game.url;
-    $('#dialog-forum').href = game.forum_url;
-    $('#share-status').textContent = '';
-    renderStats($('#dialog-stats'), game.stats, true);
-    renderRating(game.stats);
-    const reviews = highlights.filter(review => review.game_id === game.id);
-    $('#dialog-reviews').hidden = !reviews.length;
-    renderReviews($('#dialog-review-list'), reviews, false);
-    updateMetadata(game);
+    $('#dialog-play').href = game.url; $('#dialog-forum').href = game.forum_url; $('#share-status').textContent = '';
+    statPills($('#dialog-stats'), game.stats, [['fans_count', '关注'], ['review_count', '评价'], ['topic_count', '话题'], ['hits_total', '浏览']]);
+    renderRating(game); updateMetadata(game);
     if (navigate) history.pushState({studioGame: true}, '', `${base}/games/${game.id}`);
     if (!dialog.open) dialog.showModal();
-    dialog.scrollTop = 0;
-    document.body.style.overflow = 'hidden';
+    dialog.scrollTop = 0; document.body.style.overflow = 'hidden';
   };
   const syncLocation = () => {
     const match = location.pathname.match(/\/games\/(\d+)$/);
-    const game = match && site.games.find(game => game.id === Number(match[1]));
-    if (game) showGame(game, false);
-    else {if (dialog.open) dialog.close(); updateMetadata(null);}
+    const game = match && games.find(item => item.id === Number(match[1]));
+    if (game) showGame(game, false); else {if (dialog.open) dialog.close(); updateMetadata(null);}
   };
-  const closeGame = () => {
-    if (history.state && history.state.studioGame) history.back();
-    else {history.replaceState({}, '', base); syncLocation();}
-  };
-  const openGameLink = (event, game) => {
-    if (event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {event.preventDefault(); showGame(game);}
-  };
+  const closeGame = () => {if (history.state?.studioGame) history.back(); else {history.replaceState({}, '', base); syncLocation();}};
+  const opener = game => event => {if (event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {event.preventDefault(); showGame(game);}};
   dialog.querySelector('.dialog-close').addEventListener('click', closeGame);
   dialog.addEventListener('cancel', event => {event.preventDefault(); closeGame();});
-  dialog.addEventListener('click', event => {if (event.target === dialog) {const r = dialog.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) closeGame();}});
-  dialog.addEventListener('close', () => {if (!dialog.open) {document.body.style.overflow = ''; selected = null; if (returnFocus && returnFocus.isConnected) returnFocus.focus({preventScroll: true});}});
-  window.addEventListener('popstate', syncLocation);
+  dialog.addEventListener('click', event => {if (event.target !== dialog) return; const r = dialog.getBoundingClientRect(); if (event.clientX < r.left || event.clientX > r.right || event.clientY < r.top || event.clientY > r.bottom) closeGame();});
+  dialog.addEventListener('close', () => {document.body.style.overflow = ''; selected = null; if (returnFocus?.isConnected) returnFocus.focus({preventScroll: true});});
+  addEventListener('popstate', syncLocation);
   $('#share-game').addEventListener('click', async () => {
     if (!selected) return;
     const url = new URL(`${base}/games/${selected.id}`, location.origin).href;
     try {
       if (navigator.share) await navigator.share({title: selected.title, url});
-      else if (navigator.clipboard && window.isSecureContext) {await navigator.clipboard.writeText(url); $('#share-status').textContent = '作品链接已复制。';}
-      else {$('#share-status').textContent = url;}
+      else if (navigator.clipboard && isSecureContext) {await navigator.clipboard.writeText(url); $('#share-status').textContent = '作品链接已复制。';}
+      else $('#share-status').textContent = url;
     } catch (error) {if (error.name !== 'AbortError') $('#share-status').textContent = url;}
   });
-  const render = (filter) => {
-    const container = $('#game-list'); container.replaceChildren();
-    const games = site.games.filter(g => filter === '全部作品' || g.tags.includes(filter));
-    $('#empty').hidden = games.length > 0;
-    $('#empty').textContent = site.games.length ? '这个分类还没有作品，试试其他分类吧。' : '作品正在准备中。过一会儿再来逛逛吧。';
-    games.forEach((game, index) => {
-      const article = make('article', 'game reveal');
-      const artwork = make('a', 'game-art'); artwork.href = `${base}/games/${game.id}`; artwork.setAttribute('aria-label', '了解' + game.title);
-      const image = make('img'); image.loading = 'lazy'; image.width = 1920; image.height = 1080; image.referrerPolicy = 'no-referrer'; image.src = game.cover || game.icon || site.logo; image.alt = game.title + '宣传图';
-      artwork.append(image, make('span', 'open-mark', '↗'));
-      if (game.featured) artwork.append(make('span', 'featured-label', '精选作品'));
-      artwork.addEventListener('click', event => openGameLink(event, game));
-      const tags = make('p', 'game-meta', `${String(index + 1).padStart(2, '0')} / ${game.tags.filter(x => x !== 'TapTap制造').slice(0, 2).join(' · ') || '独立游戏'}`);
-      const heading = make('h3'); const title = make('a', '', game.title); title.href = artwork.href; title.addEventListener('click', event => openGameLink(event, game)); heading.append(title);
-      const stats = make('div', 'game-stats'); renderStats(stats, game.stats);
-      const bottom = make('div', 'game-bottom'); const details = make('a', 'text-link', '了解这款游戏 ↗'); details.href = artwork.href; details.addEventListener('click', event => openGameLink(event, game));
-      const external = externalLink('前往 TapTap ↗', game.url, 'game-external');
-      bottom.append(details, external); article.append(artwork, tags, heading, stats, make('p', 'game-description', game.description), bottom); container.append(article); observer.observe(article);
+
+  // 精选作品
+  const spotlight = games.find(game => game.featured) || (games.length > 3 ? games[0] : null);
+  if (spotlight) {
+    const card = $('#spotlight-card'), art = make('a', 'spotlight-art'), body = make('div', 'spotlight-body');
+    art.href = `${base}/games/${spotlight.id}`; art.setAttribute('aria-label', '查看' + spotlight.title + '详情'); art.addEventListener('click', opener(spotlight));
+    art.append(img(spotlight.cover || spotlight.icon, spotlight.title + '宣传图'));
+    const tags = make('div', 'tag-row'); tagsOf(spotlight).slice(0, 3).forEach(tag => tags.append(make('span', 'tag', tag)));
+    const pills = make('div', 'stat-pills'); statPills(pills, spotlight.stats, [['fans_count', '关注'], ['review_count', '评价']]);
+    const actions = make('div', 'spotlight-actions'), detail = make('a', 'button', '查看详情 →');
+    detail.href = art.href; detail.addEventListener('click', opener(spotlight));
+    actions.append(detail, external('前往 TapTap ↗', spotlight.url, 'text-link'));
+    body.append(tags, make('h3', '', spotlight.title), scoreBlock(spotlight), pills, make('p', 'desc', spotlight.description), actions);
+    card.append(art, body); $('#spotlight').hidden = false;
+  }
+
+  // 作品网格与筛选
+  const renderGrid = filter => {
+    const list = $('#game-list'); list.replaceChildren();
+    const shown = games.filter(game => filter ? game.tags.includes(filter) : game !== spotlight);
+    $('#empty').hidden = shown.length > 0;
+    $('#empty').textContent = games.length ? '这个分类还没有作品，试试其他分类吧。' : '作品正在准备中，过一会儿再来逛逛吧。';
+    shown.forEach(game => {
+      const card = make('article', 'game-card reveal'), art = make('div', 'art');
+      art.append(img(game.cover || game.icon, game.title + '宣传图'));
+      if (rating(game) != null) {const chip = make('span', 'rating-chip', rating(game).toFixed(1)); chip.append(make('small', '', '/' + ratingMax(game))); chip.setAttribute('aria-label', `TapTap 评分 ${rating(game)} 分`); art.append(chip);}
+      if (game.featured) art.append(make('span', 'featured-chip', '精选'));
+      const body = make('div', 'body'), title = make('h3'), link = make('a', '', game.title);
+      link.href = `${base}/games/${game.id}`; link.addEventListener('click', opener(game)); title.append(link);
+      const tags = make('div', 'tag-row'); tagsOf(game).slice(0, 3).forEach(tag => tags.append(make('span', 'tag', tag)));
+      const meta = make('div', 'meta'), numbers = [];
+      if (game.stats?.fans_count != null) numbers.push(`${count(game.stats.fans_count)} 关注`);
+      if (game.stats?.review_count != null) numbers.push(`${count(game.stats.review_count)} 评价`);
+      meta.append(make('span', '', numbers.join(' · ')), external('TapTap ↗', game.url, 'ext'));
+      body.append(title, tags, make('p', 'desc', game.description), meta);
+      card.append(art, body); list.append(card); observe(card);
     });
   };
-  const tags = ['全部作品', ...new Set(site.games.flatMap(g => g.tags).filter(t => t !== 'TapTap制造'))].slice(0, 6);
-  tags.forEach((tag, index) => {const button = make('button', '', tag); button.type = 'button'; button.setAttribute('aria-pressed', String(index === 0)); button.addEventListener('click', () => {$('#filters').querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b === button))); render(tag);}); $('#filters').append(button);});
-  render('全部作品');
-  $('#reviews').hidden = !highlights.length;
-  renderReviews($('#review-list'), highlights);
+  const tagList = [...new Set(games.flatMap(tagsOf))].slice(0, 6);
+  if (tagList.length > 1) [['全部', ''], ...tagList.map(tag => [tag, tag])].forEach(([label, value], index) => {
+    const button = make('button', '', label); button.type = 'button'; button.setAttribute('aria-pressed', String(index === 0));
+    button.addEventListener('click', () => {$('#filters').querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b === button))); renderGrid(value);});
+    $('#filters').append(button);
+  });
+  renderGrid('');
   syncLocation();
 })();

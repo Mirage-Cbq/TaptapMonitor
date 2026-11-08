@@ -284,6 +284,10 @@ class Store:
                             " AND json_extract(i.payload,'$.published_at')>=CAST(strftime('%s',?,'utc') AS INTEGER)"
                             " AND json_extract(i.payload,'$.published_at')<CAST(strftime('%s',?,'utc') AS INTEGER)",
                             (*args, (today - timedelta(days=6)).isoformat(), (today + timedelta(days=1)).isoformat()))[0]["n"]
+        previous = self.query("SELECT COUNT(*) n FROM items i WHERE " + clause +
+                              " AND json_extract(i.payload,'$.published_at')>=CAST(strftime('%s',?,'utc') AS INTEGER)"
+                              " AND json_extract(i.payload,'$.published_at')<CAST(strftime('%s',?,'utc') AS INTEGER)",
+                              (*args, (today - timedelta(days=13)).isoformat(), (today - timedelta(days=6)).isoformat()))[0]["n"]
         game_where, game_args = [], []
         if developer_id is not None:
             game_where.append("g.id IN (SELECT app_id FROM developer_games WHERE developer_id=?)")
@@ -291,23 +295,38 @@ class Store:
         if app_id is not None:
             game_where.append("g.id=?")
             game_args.append(app_id)
-        games = self.query("SELECT g.id app_id,g.title," + ",".join(
+        games = self.query("SELECT g.id app_id,g.title,g.metadata," + ",".join(
             f"COUNT(CASE WHEN i.kind='{kind}' THEN 1 END) AS {kind}" for kind in kinds) +
             ",AVG(CASE WHEN " + score_sql + " THEN json_extract(i.payload,'$.score') END) average_score"
             " FROM games g LEFT JOIN items i ON i.app_id=g.id" +
             (" WHERE " + " AND ".join(game_where) if game_where else "") + " GROUP BY g.id ORDER BY COUNT(i.source_id) DESC,g.id", game_args)
         per_game = [{"app_id": g["app_id"], "title": g["title"], "counts": {k: g[k] for k in kinds},
-                     "review_count": g["review"], "average_score": g["average_score"]} for g in games]
+                     "review_count": g["review"], "average_score": g["average_score"], **self._game_brief(g["metadata"])} for g in games]
         run_args = (developer_id,) if developer_id is not None else ()
         runs = self.query("SELECT *,json_array_length(errors) error_count FROM runs" +
                           (" WHERE developer_id=? OR developer_id IS NULL" if developer_id is not None else "") +
                           " ORDER BY id DESC LIMIT 20", run_args)
         finished = [r for r in runs if r["status"] != "running"]
         return {"totals": {"developers": len(self.developers()) if developer_id is None else int(self.developer(developer_id) is not None),
-                           "games": len(games), "items": sum(counts.values()), "recent_7_days": recent, "average_score": average},
+                           "games": len(games), "items": sum(counts.values()), "recent_7_days": recent, "previous_7_days": previous, "average_score": average},
                 "counts": counts, "games": per_game, "score_distribution": distribution, "daily": series,
                 "runs": {"items": runs, "success_rate": sum(r["status"] == "ok" for r in finished) / len(finished) if finished else None,
                          "scope": "developer_and_global" if developer_id is not None else "global"}}
+
+    @staticmethod
+    def _game_brief(metadata):
+        """Icon and TapTap rating (10-point) for dashboard display."""
+        app = json.loads(metadata or "{}")
+        icon = app.get("icon") or {}
+        try:
+            rating = float(((app.get("stat") or {}).get("rating") or {}).get("score") or 0) or None
+        except (TypeError, ValueError):
+            rating = None
+        return {"icon": (app.get("_media") or {}).get("icon") or icon.get("medium_url") or icon.get("url") or "", "rating": rating}
+
+    def last_synced(self, developer_id):
+        return self.query("SELECT MAX(g.updated_at) t FROM games g JOIN developer_games d ON d.app_id=g.id WHERE d.developer_id=?",
+                          (developer_id,))[0]["t"]
 
     def events(self, after=0, developer_id=None, limit=100, include_baseline=False, through=None):
         where, args = ["e.id>?"], [after]
