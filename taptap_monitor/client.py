@@ -49,7 +49,7 @@ class TapTapClient:
             await asyncio.sleep(max(0, self.settings.request_interval - (time.monotonic() - self.last_request)))
             self.last_request = time.monotonic()
             try:
-                response = await self.http.get(httpx.URL(url).copy_merge_params(query))
+                response = await self.http.get(httpx.URL(url).copy_merge_params(query), timeout=self.settings.request_timeout)
                 if response.status_code == 429 or response.status_code >= 500:
                     if attempt < 2:
                         await asyncio.sleep(2 ** (attempt + 1))

@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+from datetime import date, timedelta
 import json
 from pathlib import Path
 import sqlite3
@@ -72,6 +73,7 @@ class Store:
     def connect(self):
         db = sqlite3.connect(self.path, timeout=15)
         db.row_factory = sqlite3.Row
+        db.create_function("casefold", 1, lambda value: value.casefold(), deterministic=True)
         db.execute("PRAGMA foreign_keys=ON")
         try:
             with db:
@@ -106,6 +108,9 @@ class Store:
             raise ValueError("Unsupported developer setting")
         with self.connect() as db:
             db.execute("UPDATE developers SET " + ",".join(f"{key}=?" for key in fields) + " WHERE id=?", (*fields.values(), developer_id))
+            if "name" in fields:
+                db.execute("INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                           (f"developer_name:{developer_id}", json.dumps(fields["name"], ensure_ascii=False)))
 
     def save_game(self, developer_id: int, app: dict, group_id=None):
         # Keep only public game metadata, without analytics/tracking payloads.
@@ -120,7 +125,9 @@ class Store:
     def save_profile(self, developer_id, profile):
         source = {k: profile[k] for k in ("name", "intro", "avatar", "website") if k in profile}
         with self.connect() as db:
-            db.execute("UPDATE developers SET name=? WHERE id=?", (profile["name"], developer_id))
+            db.execute("""UPDATE developers SET name=COALESCE(
+                (SELECT json_extract(value,'$') FROM settings WHERE key=?),?) WHERE id=?""",
+                       (f"developer_name:{developer_id}", profile["name"], developer_id))
             db.execute("UPDATE sites SET source=? WHERE developer_id=?", (json.dumps(source, ensure_ascii=False), developer_id))
 
     def presentation(self, developer_id):
@@ -187,6 +194,120 @@ class Store:
             args.append(kind)
         rows = self.query("SELECT payload,first_seen,last_seen FROM items WHERE " + " AND ".join(where) + " ORDER BY json_extract(payload,'$.published_at') DESC,source_id DESC LIMIT ? OFFSET ?", (*args, limit, offset))
         return [{**json.loads(row["payload"]), "first_seen": row["first_seen"], "last_seen": row["last_seen"]} for row in rows]
+
+    def setting(self, key, default=None):
+        rows = self.query("SELECT value FROM settings WHERE key=?", (key,))
+        return json.loads(rows[0]["value"]) if rows else default
+
+    def save_setting(self, key, value):
+        with self.connect() as db:
+            db.execute("INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                       (key, json.dumps(value, ensure_ascii=False)))
+
+    @staticmethod
+    def item_scope(developer_id=None, app_id=None, kind=None):
+        where, args = ["1=1"], []
+        if developer_id is not None:
+            where.append("i.app_id IN (SELECT app_id FROM developer_games WHERE developer_id=?)")
+            args.append(developer_id)
+        if app_id is not None:
+            where.append("i.app_id=?")
+            args.append(app_id)
+        if kind is not None:
+            where.append("i.kind=?")
+            args.append(kind)
+        return where, args
+
+    def search_items(self, developer_id=None, app_id=None, kind=None, score=None,
+                     min_score=None, max_score=None, q=None, since=None, until=None,
+                     official=None, sort="newest", limit=100, offset=0):
+        where, args = self.item_scope(developer_id, app_id, kind)
+        for value, expression in (
+            (score, "i.kind='review' AND json_extract(i.payload,'$.score')=?"),
+            (min_score, "i.kind='review' AND json_extract(i.payload,'$.score')>=?"),
+            (max_score, "i.kind='review' AND json_extract(i.payload,'$.score')<=?"),
+            (since, "json_extract(i.payload,'$.published_at')>=?"),
+            (until, "json_extract(i.payload,'$.published_at')<=?"),
+            (official, "COALESCE(json_extract(i.payload,'$.official'),0)=?"),
+        ):
+            if value is not None:
+                where.append(expression)
+                args.append(value)
+        if q:
+            where.append("(" + " OR ".join(
+                f"instr(casefold(COALESCE(json_extract(i.payload,'$.{key}'),'')),?)>0"
+                for key in ("body", "title", "author")) + ")")
+            args.extend([q.casefold()] * 3)
+        ordering = {
+            "newest": "json_extract(i.payload,'$.published_at') DESC",
+            "oldest": "json_extract(i.payload,'$.published_at') ASC",
+            "score_desc": "CASE WHEN i.kind='review' THEN json_extract(i.payload,'$.score') END DESC NULLS LAST",
+            "score_asc": "CASE WHEN i.kind='review' THEN json_extract(i.payload,'$.score') END ASC NULLS LAST",
+        }[sort]
+        clause = " AND ".join(where)
+        # Count and page use one snapshot so concurrent collection cannot split them.
+        with self.connect() as db:
+            db.execute("BEGIN")
+            total = db.execute("SELECT COUNT(*) FROM items i WHERE " + clause, args).fetchone()[0]
+            rows = db.execute("SELECT i.*,g.title AS game_title FROM items i LEFT JOIN games g ON g.id=i.app_id WHERE "
+                              + clause + " ORDER BY " + ordering + ",i.app_id,i.kind,i.source_id LIMIT ? OFFSET ?",
+                              (*args, limit, offset)).fetchall()
+        return {"items": [{**json.loads(row["payload"]), "game_title": row["game_title"],
+                           "first_seen": row["first_seen"], "last_seen": row["last_seen"]} for row in rows], "total": total}
+
+    def stats(self, developer_id=None, app_id=None, days=30):
+        kinds = ("review", "topic", "review_comment", "topic_comment")
+        where, args = self.item_scope(developer_id, app_id)
+        clause = " AND ".join(where)
+        counts = {kind: 0 for kind in kinds}
+        counts.update({row["kind"]: row["n"] for row in self.query(
+            "SELECT i.kind,COUNT(*) n FROM items i WHERE " + clause + " GROUP BY i.kind", args)})
+        score_sql = "i.kind='review' AND json_extract(i.payload,'$.score') BETWEEN 1 AND 5"
+        average = self.query("SELECT AVG(json_extract(i.payload,'$.score')) average_score FROM items i WHERE "
+                             + clause + " AND " + score_sql, args)[0]["average_score"]
+        distribution = {str(score): 0 for score in range(1, 6)}
+        distribution.update({str(row["score"]): row["n"] for row in self.query(
+            "SELECT json_extract(i.payload,'$.score') score,COUNT(*) n FROM items i WHERE "
+            + clause + " AND " + score_sql + " GROUP BY score", args)})
+        today = date.today()
+        start = today - timedelta(days=days - 1)
+        daily_rows = self.query("SELECT date(json_extract(i.payload,'$.published_at'),'unixepoch','localtime') day,"
+                                "i.kind,COUNT(*) n FROM items i WHERE " + clause +
+                                " AND json_extract(i.payload,'$.published_at')>=CAST(strftime('%s',?,'utc') AS INTEGER)"
+                                " AND json_extract(i.payload,'$.published_at')<CAST(strftime('%s',?,'utc') AS INTEGER)"
+                                " GROUP BY day,i.kind", (*args, start.isoformat(), (today + timedelta(days=1)).isoformat()))
+        daily = {(row["day"], row["kind"]): row["n"] for row in daily_rows}
+        series = [{"date": (start + timedelta(days=n)).isoformat(),
+                   **{kind: daily.get(((start + timedelta(days=n)).isoformat(), kind), 0) for kind in kinds}}
+                  for n in range(days)]
+        recent = self.query("SELECT COUNT(*) n FROM items i WHERE " + clause +
+                            " AND json_extract(i.payload,'$.published_at')>=CAST(strftime('%s',?,'utc') AS INTEGER)"
+                            " AND json_extract(i.payload,'$.published_at')<CAST(strftime('%s',?,'utc') AS INTEGER)",
+                            (*args, (today - timedelta(days=6)).isoformat(), (today + timedelta(days=1)).isoformat()))[0]["n"]
+        game_where, game_args = [], []
+        if developer_id is not None:
+            game_where.append("g.id IN (SELECT app_id FROM developer_games WHERE developer_id=?)")
+            game_args.append(developer_id)
+        if app_id is not None:
+            game_where.append("g.id=?")
+            game_args.append(app_id)
+        games = self.query("SELECT g.id app_id,g.title," + ",".join(
+            f"COUNT(CASE WHEN i.kind='{kind}' THEN 1 END) AS {kind}" for kind in kinds) +
+            ",AVG(CASE WHEN " + score_sql + " THEN json_extract(i.payload,'$.score') END) average_score"
+            " FROM games g LEFT JOIN items i ON i.app_id=g.id" +
+            (" WHERE " + " AND ".join(game_where) if game_where else "") + " GROUP BY g.id ORDER BY COUNT(i.source_id) DESC,g.id", game_args)
+        per_game = [{"app_id": g["app_id"], "title": g["title"], "counts": {k: g[k] for k in kinds},
+                     "review_count": g["review"], "average_score": g["average_score"]} for g in games]
+        run_args = (developer_id,) if developer_id is not None else ()
+        runs = self.query("SELECT *,json_array_length(errors) error_count FROM runs" +
+                          (" WHERE developer_id=? OR developer_id IS NULL" if developer_id is not None else "") +
+                          " ORDER BY id DESC LIMIT 20", run_args)
+        finished = [r for r in runs if r["status"] != "running"]
+        return {"totals": {"developers": len(self.developers()) if developer_id is None else int(self.developer(developer_id) is not None),
+                           "games": len(games), "items": sum(counts.values()), "recent_7_days": recent, "average_score": average},
+                "counts": counts, "games": per_game, "score_distribution": distribution, "daily": series,
+                "runs": {"items": runs, "success_rate": sum(r["status"] == "ok" for r in finished) / len(finished) if finished else None,
+                         "scope": "developer_and_global" if developer_id is not None else "global"}}
 
     def events(self, after=0, developer_id=None, limit=100, include_baseline=False, through=None):
         where, args = ["e.id>?"], [after]

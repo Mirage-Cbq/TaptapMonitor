@@ -3,6 +3,25 @@ import os
 from pathlib import Path
 import tomllib
 
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class RuntimeUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    poll_seconds: int | None = Field(None, ge=60)
+    request_interval: float | None = Field(None, ge=0, le=60)
+    request_timeout: float | None = Field(None, gt=0, le=120)
+    max_pages: int | None = Field(None, ge=1, le=1000)
+    collect_comments: bool | None = None
+    cache_images: bool | None = None
+    digest_enabled: bool | None = None
+    digest_interval: int | None = Field(None, ge=60)
+    digest_batch_size: int | None = Field(None, ge=1, le=500)
+
+
+RUNTIME_FIELDS = tuple(RuntimeUpdate.model_fields)
+
 
 @dataclass
 class Settings:
@@ -39,10 +58,7 @@ class Settings:
             api_token=os.environ.get("MONITOR_API_TOKEN", ""),
             site_developer_id=data.get("site", {}).get("primary_developer_id"),
         )
-        if settings.poll_seconds < 60 or settings.request_interval < 0:
-            raise ValueError("poll_seconds must be >= 60 and request_interval >= 0")
-        if settings.max_pages < 1 or settings.request_timeout <= 0:
-            raise ValueError("max_pages and request_timeout must be positive")
-        if settings.digest_interval < 60 or not 1 <= settings.digest_batch_size <= 500:
-            raise ValueError("Invalid digest interval or batch size")
+        RuntimeUpdate(**{key: getattr(settings, key) for key in RUNTIME_FIELDS})
+        if any(getattr(settings, key) is None for key in RUNTIME_FIELDS):
+            raise ValueError("Runtime defaults cannot be null")
         return settings

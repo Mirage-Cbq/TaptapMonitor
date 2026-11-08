@@ -19,11 +19,12 @@ from pydantic import BaseModel, Field
 
 from .client import TapTapClient
 from .collector import Collector
-from .config import Settings
+from .config import RUNTIME_FIELDS, RuntimeUpdate, Settings
 from .delivery import Delivery, digest_input, render_digest
 from .store import Store
 from .website import site_data
 from .lock import ProcessLock
+from .media import MediaCache
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ class DeveloperCreate(BaseModel):
 
 
 class DeveloperUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
     enabled: bool | None = None
     target_umo: str | None = Field(default=None, max_length=300)
 
@@ -60,6 +62,13 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
     if len(settings.api_token) < 24 or settings.api_token.startswith("replace-"):
         raise ValueError("Set MONITOR_API_TOKEN to a random token with at least 24 characters")
     store = Store(settings.database)
+    defaults = getattr(settings, "_runtime_defaults", None)
+    if defaults is None:
+        defaults = {key: getattr(settings, key) for key in RUNTIME_FIELDS}
+        settings._runtime_defaults = defaults.copy()
+    overrides = RuntimeUpdate(**store.setting("runtime", {})).model_dump(exclude_none=True, exclude_unset=True)
+    for key in RUNTIME_FIELDS:
+        setattr(settings, key, overrides.get(key, defaults[key]))
     for developer in settings.developers:
         store.add_developer(developer["id"], developer.get("name", ""), developer.get("target_umo", ""))
         if developer.get("logo") and "logo_url" not in store.presentation(developer["id"])["custom"]:
@@ -112,6 +121,7 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
     app = FastAPI(title="TapTap 作品监测", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store
     app.state.collector = collector
+    app.state.settings = settings
 
     @app.middleware("http")
     async def response_headers(request, call_next):
@@ -144,7 +154,14 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
 
     @api.get("/developers")
     async def developers():
-        return store.developers()
+        result = store.developers()
+        for developer in result:
+            developer["game_count"] = store.query("SELECT COUNT(*) n FROM developer_games WHERE developer_id=?", (developer["id"],))[0]["n"]
+            developer["feedback_count"] = store.query("SELECT COUNT(*) n FROM items WHERE app_id IN (SELECT app_id FROM developer_games WHERE developer_id=?)", (developer["id"],))[0]["n"]
+            presentation = store.presentation(developer["id"])
+            avatar = presentation["source"].get("avatar") or {}
+            developer["logo"] = presentation["custom"].get("logo_url") or avatar.get("original_url") or avatar.get("url") or "/favicon.svg"
+        return result
 
     @api.post("/developers", status_code=201)
     async def add_developer(body: DeveloperCreate):
@@ -175,6 +192,56 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
                     kind: str | None = Query(None, pattern="^(review|topic|review_comment|topic_comment)$"),
                     limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
         return store.items(developer_id, app_id, kind, limit, offset)
+
+    @api.get("/items/search")
+    async def search_items(developer_id: int | None = Query(None, gt=0), app_id: int | None = Query(None, gt=0),
+                           kind: str | None = Query(None, pattern="^(review|topic|review_comment|topic_comment)$"),
+                           score: int | None = Query(None, ge=1, le=5),
+                           min_score: int | None = Query(None, ge=1, le=5), max_score: int | None = Query(None, ge=1, le=5),
+                           q: str | None = Query(None, max_length=1000), since: int | None = None, until: int | None = None,
+                           official: bool | None = None,
+                           sort: str = Query("newest", pattern="^(newest|oldest|score_desc|score_asc)$"),
+                           limit: int = Query(100, ge=1, le=500), offset: int = Query(0, ge=0)):
+        if min_score is not None and max_score is not None and min_score > max_score:
+            raise HTTPException(422, "最低评分不能高于最高评分")
+        if since is not None and until is not None and since > until:
+            raise HTTPException(422, "开始时间不能晚于结束时间")
+        return store.search_items(developer_id, app_id, kind, score, min_score, max_score, q, since, until, official, sort, limit, offset)
+
+    @api.get("/stats")
+    async def stats(developer_id: int | None = Query(None, gt=0), app_id: int | None = Query(None, gt=0),
+                    days: int = Query(30, ge=7, le=365)):
+        return store.stats(developer_id, app_id, days)
+
+    def effective_settings():
+        return {"values": {key: getattr(settings, key) for key in RUNTIME_FIELDS},
+                "defaults": defaults, "overrides": overrides.copy(),
+                "info": {"astrbot_configured": bool(settings.astrbot_url and settings.astrbot_key),
+                         "database": str(Path(settings.database).resolve()), "version": app.version}}
+
+    @api.get("/settings")
+    async def get_settings():
+        return effective_settings()
+
+    @api.patch("/settings")
+    async def update_settings(body: RuntimeUpdate):
+        updated = overrides.copy()
+        for key, value in body.model_dump(exclude_unset=True).items():
+            if value is None:
+                updated.pop(key, None)
+            else:
+                updated[key] = value
+        # Create the cache before persisting or changing the shared settings object.
+        cache = collector.media
+        if updated.get("cache_images", defaults["cache_images"]) and cache is None:
+            cache = MediaCache(Path(settings.database).parent / "media")
+        store.save_setting("runtime", updated)
+        overrides.clear()
+        overrides.update(updated)
+        for key in RUNTIME_FIELDS:
+            setattr(settings, key, overrides.get(key, defaults[key]))
+        collector.media = cache if settings.cache_images else None
+        return effective_settings()
 
     @api.get("/events")
     async def events(after: int = Query(0, ge=0), developer_id: int | None = None,

@@ -343,3 +343,184 @@ def test_bundled_logo_is_seeded_once_and_manual_choice_wins(settings, store):
     store.save_presentation(383549,{'logo_url':'/media/custom.png'})
     with TestClient(create_app(initial,scheduler_enabled=False)) as client:
         assert client.get('/public/site').json()['logo'] == '/media/custom.png'
+
+
+def seed_dashboard(store):
+    from datetime import datetime, timedelta
+    today = datetime.now().replace(hour=12, minute=0, second=0, microsecond=0)
+    published = int((today - timedelta(days=1)).timestamp())
+    store.add_developer(999, 'Other')
+    store.save_game(999, {'id': 101, 'title': '第二个作品'})
+    store.save_game(383549, {'id': 102, 'title': '空作品'})
+    store.save_item(replace(item(), source_id='1', title='体验', body='Hello 中文 100%', author='Alice', score=5, published_at=published))
+    store.save_item(replace(item(), source_id='2', body='hello again', author='Bob', score=1, official=True, published_at=published - 86400))
+    store.save_item(replace(item(), source_id='3', kind='topic', title='HELLO Topic', published_at=published))
+    store.save_item(replace(item(), source_id='4', kind='review_comment', official=True, published_at=published))
+    store.save_item(replace(item(), source_id='5', app_id=101, kind='topic_comment', published_at=published))
+    store.save_item(replace(item(), source_id='6', app_id=101, score=3, published_at=1))
+    for errors in ([], ['broken', 'restricted']):
+        run = store.start_run(383549)
+        store.finish_run(run, {'created': 2, 'updated': 1}, errors)
+    return published
+
+
+def test_dashboard_stats(settings, store):
+    published = seed_dashboard(store)
+    # Shared games must never duplicate feedback in developer aggregates.
+    store.save_game(999, {'id': 100, 'title': 'Test Game'})
+    with TestClient(create_app(settings, scheduler_enabled=False)) as client:
+        headers = {'Authorization': 'Bearer ' + settings.api_token}
+        data = client.get('/api/stats?days=7', headers=headers).json()
+        assert data['counts'] == {'review': 3, 'topic': 1, 'review_comment': 1, 'topic_comment': 1}
+        assert data['totals'] == {'developers': 2, 'games': 3, 'items': 6, 'recent_7_days': 5, 'average_score': 3}
+        assert data['score_distribution'] == {'1': 1, '2': 0, '3': 1, '4': 0, '5': 1}
+        assert len(data['daily']) == 7
+        assert sum(sum(day[k] for k in data['counts']) for day in data['daily']) == 5
+        assert any(all(day[k] == 0 for k in data['counts']) for day in data['daily'])
+        game = next(g for g in data['games'] if g['app_id'] == 100)
+        assert game['review_count'] == 2 and game['average_score'] == 3
+        assert next(g for g in data['games'] if g['app_id'] == 102)['average_score'] is None
+        assert data['runs']['success_rate'] == .5
+        assert data['runs']['items'][0]['error_count'] == 2
+        filtered = client.get('/api/stats?developer_id=383549&app_id=100', headers=headers).json()
+        assert filtered['totals']['items'] == 4 and len(filtered['games']) == 1
+        assert len(filtered['daily']) == 30
+        assert client.get('/api/stats?days=6', headers=headers).status_code == 422
+        assert client.get('/api/stats?days=366', headers=headers).status_code == 422
+        empty = client.get('/api/stats?developer_id=123', headers=headers).json()
+        assert empty['totals']['items'] == 0 and empty['totals']['average_score'] is None
+        assert empty['runs']['success_rate'] is None
+        assert len(empty['daily']) == 30
+        assert published > 0
+
+
+def test_search_filters_sort_and_total(settings, store):
+    published = seed_dashboard(store)
+    with TestClient(create_app(settings, scheduler_enabled=False)) as client:
+        headers = {'Authorization': 'Bearer ' + settings.api_token}
+        def search(**params):
+            response = client.get('/api/items/search', params=params, headers=headers)
+            assert response.status_code == 200, response.text
+            return response.json()
+        page = search(developer_id=383549, limit=1, offset=1)
+        assert page['total'] == 4 and len(page['items']) == 1
+        assert page['items'][0]['game_title'] == 'Test Game'
+        assert search(app_id=101)['total'] == 2
+        assert search(q='hElLo')['total'] == 3
+        assert search(q='alice')['total'] == 1
+        assert search(q='体验')['total'] == 1
+        assert search(q='100%')['total'] == 1
+        assert search(q="' OR 1=1 --")['total'] == 0
+        assert search(q='_')['total'] == 0
+        assert search(kind='review', score=5)['total'] == 1
+        assert search(min_score=2, max_score=4)['total'] == 1
+        assert search(official=True)['total'] == 2
+        assert search(official=False)['total'] == 4
+        assert search(since=published, until=published)['total'] == 4
+        assert [x['score'] for x in search(kind='review', sort='score_desc')['items']] == [5, 3, 1]
+        assert [x['score'] for x in search(kind='review', sort='score_asc')['items']] == [1, 3, 5]
+        assert search(sort='oldest')['items'][0]['source_id'] == '6'
+        assert search(sort='newest')['items'][-1]['source_id'] == '6'
+        assert search(limit=1, offset=99) == {'items': [], 'total': 6}
+        for params in ({'score': 6}, {'sort': 'sql'}, {'limit': 501}, {'offset': -1}, {'min_score': 5, 'max_score': 1}, {'since': 2, 'until': 1}):
+            assert client.get('/api/items/search', params=params, headers=headers).status_code == 422
+        assert isinstance(client.get('/api/items', headers=headers).json(), list)
+
+
+def test_runtime_settings_live_validation_reset_restart(settings):
+    app = create_app(settings, scheduler_enabled=False)
+    with TestClient(app) as client:
+        headers = {'Authorization': 'Bearer ' + settings.api_token}
+        initial = client.get('/api/settings', headers=headers).json()
+        assert initial['overrides'] == {}
+        assert initial['values']['request_interval'] == 0
+        assert initial['info']['astrbot_configured'] is False
+        assert 'api_token' not in initial['values'] and 'astrbot_key' not in initial['info']
+        values = {'poll_seconds': 60, 'request_interval': 60, 'request_timeout': 120, 'max_pages': 1000,
+                  'collect_comments': False, 'cache_images': False, 'digest_enabled': True,
+                  'digest_interval': 60, 'digest_batch_size': 500}
+        response = client.patch('/api/settings', headers=headers, json=values)
+        assert response.status_code == 200
+        assert response.json()['overrides'] == values
+        assert app.state.settings is settings and app.state.collector.settings is settings
+        assert settings.request_timeout == 120 and settings.digest_enabled is True
+        assert app.state.collector.media is None
+        for key, bad in [('poll_seconds', 59), ('request_interval', -1), ('request_interval', 61),
+                         ('request_timeout', 0), ('request_timeout', 121), ('max_pages', 0), ('max_pages', 1001),
+                         ('digest_interval', 59), ('digest_batch_size', 0), ('digest_batch_size', 501), ('cache_images', 'invalid'), ('api_token', 'secret')]:
+            assert client.patch('/api/settings', headers=headers, json={key: bad}).status_code == 422
+        assert settings.poll_seconds == 60
+        reset = client.patch('/api/settings', headers=headers, json={'request_timeout': None, 'cache_images': None}).json()
+        assert settings.request_timeout == initial['defaults']['request_timeout']
+        assert 'request_timeout' not in reset['overrides']
+        assert app.state.collector.media is not None
+    fresh = replace(settings, poll_seconds=900, request_timeout=44)
+    with TestClient(create_app(fresh, scheduler_enabled=False)) as client:
+        data = client.get('/api/settings', headers=headers).json()
+        assert data['values']['poll_seconds'] == 60
+        assert data['defaults']['poll_seconds'] == 900
+        assert data['values']['request_timeout'] == 44
+        reset = client.patch('/api/settings', headers=headers, json={key: None for key in values}).json()
+        assert reset['overrides'] == {} and fresh.poll_seconds == 900
+
+
+def test_dashboard_auth_and_developer_rename(settings):
+    with TestClient(create_app(settings, scheduler_enabled=False)) as client:
+        for path in ('/api/stats', '/api/items/search', '/api/settings'):
+            assert client.get(path).status_code == 401
+        assert client.patch('/api/settings', json={'poll_seconds': 60}).status_code == 401
+        headers = {'Authorization': 'Bearer ' + settings.api_token}
+        path = '/api/developers/383549'
+        assert client.patch(path, headers=headers, json={'name': '新厂商名'}).json()['name'] == '新厂商名'
+        app_store = client.app.state.store
+        app_store.save_profile(383549, {'name': 'TapTap 自动名称'})
+        assert app_store.developer(383549)['name'] == '新厂商名'
+        assert client.patch(path, headers=headers, json={'name': 'x' * 121}).status_code == 422
+        assert client.delete(path, headers=headers).status_code == 405
+
+
+def test_request_timeout_updates_between_requests(settings):
+    observed = []
+    def handle(request):
+        observed.append(request.extensions['timeout']['read'])
+        return httpx.Response(200, json={'success': True, 'data': {}})
+    async def run():
+        client = TapTapClient(settings, httpx.MockTransport(handle))
+        await client.get('test/list')
+        settings.request_timeout = 8
+        await client.get('test/list')
+        await client.close()
+    asyncio.run(run())
+    assert observed == [30, 8]
+
+
+def test_dashboard_local_date_boundaries_and_recent_runs(settings, store):
+    from datetime import datetime, timedelta
+    midnight = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    start = int((midnight - timedelta(days=6)).timestamp())
+    tomorrow = int((midnight + timedelta(days=1)).timestamp())
+    for n, published in enumerate([start - 1, start, int(midnight.timestamp()), tomorrow]):
+        store.save_item(replace(item(), source_id=str(n), published_at=published, author='ÄLICE'))
+    for n in range(22):
+        run = store.start_run()
+        if n != 21:
+            store.finish_run(run, {'created': n, 'updated': 0}, ['failure'] if n == 20 else [])
+    with TestClient(create_app(settings, scheduler_enabled=False)) as client:
+        headers = {'Authorization': 'Bearer ' + settings.api_token}
+        stats = client.get('/api/stats?days=7', headers=headers).json()
+        assert stats['totals']['items'] == 4
+        assert stats['totals']['recent_7_days'] == 2
+        assert stats['daily'][0]['review'] == 1 and stats['daily'][-1]['review'] == 1
+        assert sum(day['review'] for day in stats['daily']) == 2
+        assert len(stats['runs']['items']) == 20
+        # Lifespan marks the unfinished run interrupted; neither it nor partial runs count as successful.
+        assert stats['runs']['success_rate'] == .9
+        assert client.get('/api/items/search?q=älice', headers=headers).json()['total'] == 4
+
+
+def test_settings_load_runtime_bounds(tmp_path):
+    for key, value in [('poll_seconds', 59), ('request_interval', 61), ('request_timeout', 121), ('max_pages', 1001)]:
+        path = tmp_path / 'config.toml'
+        path.write_text(f'[monitor]\n{key}={value}\n', encoding='utf-8')
+        with pytest.raises(ValueError):
+            Settings.load(str(path))
