@@ -26,7 +26,8 @@
       <label for="token">管理令牌</label>
       <input id="token" type="password" autocomplete="off" required minlength="24" autofocus placeholder="粘贴服务器上的 MONITOR_API_TOKEN">
       <button class="primary block">进入后台</button>
-      <p class="muted small">令牌只保存在当前标签页，关闭即清除。</p>
+      <label class="switch remember"><input id="remember" type="checkbox"><span class="track"></span>在这台电脑上记住令牌</label>
+      <p class="muted small">不勾选时令牌只保存在当前标签页；退出登录会清除。</p>
       <p id="login-error" class="error" role="alert"></p>
     </div>
   </form>

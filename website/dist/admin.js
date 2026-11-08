@@ -24,7 +24,9 @@
   const number = value => Number(value || 0).toLocaleString('zh-CN');
   const ten = stars => stars == null ? null : stars * 2;  // 1–5 星 → 十分制
   const field = (form, key) => form.elements.namedItem(key);
-  let token = sessionStorage.getItem('monitor-token') || '';
+  const KEY='monitor-token';
+  const forget=()=>{try {sessionStorage.removeItem(KEY); localStorage.removeItem(KEY);} catch {}};
+  let token=''; try {token=sessionStorage.getItem(KEY) || localStorage.getItem(KEY) || '';} catch {}
   let developers = [], games = [], developerId = null, site = null, view = 'overview', days = 30, tab = 'site';
   let offset = 0, total = 0, filterParams = new URLSearchParams(), status = null;
   let statsTicket = 0, searchTicket = 0, siteTicket = 0, polling = false, runtime = null, overviewData = null;
@@ -50,7 +52,7 @@
       const detail = data.detail;
       const error = new Error(Array.isArray(detail) ? '输入内容有误，请检查标注字段。' : translations[detail] || (typeof detail === 'string' && /[一-鿿]/.test(detail) ? detail : '请求失败，请检查服务状态。'));
       error.details = Array.isArray(detail) ? detail : []; error.status = response.status;
-      if (response.status === 401) {sessionStorage.removeItem('monitor-token'); $('#workspace').hidden = true; $('#login').hidden = false; $('#login-error').textContent = error.message;}
+      if (response.status === 401) {forget(); $('#workspace').hidden = true; $('#login').hidden = false; $('#login-error').textContent = error.message;}
       throw error;
     }
     return response.json();
@@ -530,13 +532,14 @@
     if (view==='settings') {await loadSettings(); await loadUpgrade();}
   }
   async function connect() {
-    await loadCatalog(); sessionStorage.setItem('monitor-token',token);
+    await loadCatalog();
+    try {if ($('#remember').checked || localStorage.getItem(KEY)) localStorage.setItem(KEY,token); else sessionStorage.setItem(KEY,token);} catch {}
     await Promise.all([gameOptions($('#overview-developer'),$('#overview-game')),gameOptions($('#filter-developer'),$('#filter-game'))]);
     $('#login').hidden=true; $('#workspace').hidden=false; $('#login-error').textContent=''; await loadStatus();
     if (!views[location.hash.replace(/^#\//,'')]) location.hash='#/'+view; else await route();
   }
   $('#login').addEventListener('submit',guarded(async()=>{token=$('#token').value.trim(); await connect();}));
-  $('#logout').addEventListener('click',()=>{sessionStorage.removeItem('monitor-token'); token=''; location.reload();});
+  $('#logout').addEventListener('click',()=>{forget(); token=''; location.reload();});
   $('#scan').addEventListener('click',guarded(()=>scan()));
   $('#sync-site').addEventListener('click',guarded(async()=>{if (developerId) await scan(developerId);}));
   $('#overview-developer').addEventListener('change',guarded(async()=>{$('#overview-game').value=''; await gameOptions($('#overview-developer'),$('#overview-game')); await loadOverview();}));
