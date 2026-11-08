@@ -155,7 +155,10 @@ class OfficialBridge:
 
 SUMMARY_FIELDS = ("page_view_count", "download_count", "reserve_count", "download_request_count", "rating_score",
                   "positive_review_count", "neutral_review_count", "negative_review_count", "topic_count",
-                  "topic_page_view_count", "favorite_count", "feed_count")
+                  "topic_page_view_count", "favorite_count", "feed_count",
+                  "review_count", "fans_count", "hits_total", "play_total", "wish_count", "latest_version_score", "vote_info")
+# store_snapshot carries the live store card: data.app.stat {rating{score,latest_version_score}, vote_info, fans_count, ...}
+SNAPSHOT_STATS = ("review_count", "fans_count", "hits_total", "play_total", "wish_count", "reserve_count")
 REPORT_KINDS = ("store_overview", "review_overview", "community_overview", "store_snapshot")
 DATE_KEYS = ("date", "day", "stat_date", "dt", "time", "timestamp")
 
@@ -189,6 +192,35 @@ def daily_metrics(data):
 
 def report_data(payload):
     return payload.get("data", payload) if isinstance(payload, dict) else {}
+
+
+def _score(value):
+    """Official scores arrive as strings like "7.7"; "0" means no rating yet."""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) and number > 0 else None
+
+
+def official_summary(reports):
+    data = {kind: report_data(reports.get(kind, {}).get("data", {})) for kind in REPORT_KINDS}
+    summary = {key: None for key in SUMMARY_FIELDS}
+    for kind in ("store_overview", "review_overview", "community_overview", "store_snapshot"):
+        summary.update({key: value for key, value in data[kind].items() if key in SUMMARY_FIELDS and value is not None})
+    rating_summary = data["review_overview"].get("rating_summary") or {}
+    if summary["review_count"] is None and isinstance(rating_summary.get("stat"), dict):
+        summary["review_count"] = rating_summary["stat"].get("review_count")
+    stat = (data["store_snapshot"].get("app") or {}).get("stat") or {}
+    rating = stat.get("rating") or {}
+    summary["rating_score"] = _score(rating.get("score")) or _score(summary["rating_score"])
+    summary["latest_version_score"] = _score(rating.get("latest_version_score"))
+    if isinstance(stat.get("vote_info"), dict):
+        summary["vote_info"] = stat["vote_info"]
+    for key in SNAPSHOT_STATS:
+        if stat.get(key) is not None and (summary[key] is None or key != "reserve_count"):
+            summary[key] = stat[key]
+    return summary
 
 
 def account_apps(payload):
@@ -407,10 +439,7 @@ class OfficialService:
         result = []
         for game in games:
             reports = self.store.reports(game["id"]) if game["id"] in entitled else {}
-            summary = {key: None for key in SUMMARY_FIELDS} if reports else {}
-            for kind in REPORT_KINDS:
-                data = report_data(reports.get(kind, {}).get("data", {}))
-                summary.update({key: data[key] for key in SUMMARY_FIELDS if data.get(key) is not None})
+            summary = official_summary(reports) if reports else {}
             icon = game["metadata"].get("icon")
             if isinstance(icon, dict):
                 icon = icon.get("original_url") or icon.get("url")

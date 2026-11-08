@@ -596,13 +596,22 @@
       const card=el('article','core-game'), head=el('div','core-head'), figs=el('div','core-figs');
       head.append(image(game.icon,'',36),el('strong','',game.title),el('span','chip '+(game.official?'ok':'muted'),game.official?'官方':'公开'));
       if (game.official) {
-        const s=game.summary, d=game.official_daily;
-        const sp=key=>{const line=series(d,key,data.days); return line.length>1?AdminCharts.sparkline(relative(line)):null;};
-        figs.append(figure('下载量',s.download_count==null?'—':number(s.download_count),sp('download_count')),
-          figure('曝光量',s.page_view_count==null?'—':number(s.page_view_count),sp('page_view_count')),
-          figure('预约量',s.reserve_count==null?'—':number(s.reserve_count),sp('reserve_count')),
-          figure('官方评分',s.rating_score==null?'—':Number(s.rating_score).toFixed(1)+' /10',null,
-            s.positive_review_count==null?'':`好评 ${number(s.positive_review_count)} · 差评 ${number(s.negative_review_count)}`));
+        const s=game.summary, d=game.official_daily, pub=game.public_daily||[];
+        const val=(...keys)=>keys.map(k=>s[k]).find(v=>v!=null);
+        // 官方趋势是每日新增（非累计），直接画；公开数据是累计值，以区间最小值为基线
+        const daily=key=>{const map=new Map(d.map(r=>[r.day,r[key]])); if (!d.some(r=>r[key]!=null)) return null; const line=data.days.map(day=>map.get(day)||0); return {line,total:line.reduce((a,b)=>a+b,0)};};
+        const cumul=key=>{const line=series(pub,key,data.days); return line.length>1?AdminCharts.sparkline(relative(line)):null;};
+        const fav=daily('favorite_trend_value'), fans=val('fans_count','favorite_count');
+        const reviews=[['好评',s.positive_review_count],['中评',s.neutral_review_count],['差评',s.negative_review_count]].filter(([,v])=>v!=null);
+        const downloads=val('download_count'), reserves=val('reserve_count');
+        const third=downloads>0 || reserves==null
+          ? figure('下载量',downloads==null?'—':number(downloads),null,s.play_total?`游玩 ${number(s.play_total)}`:'')
+          : figure('预约量',number(reserves),cumul('reserve_count'),s.wish_count!=null?`想玩 ${number(s.wish_count)}`:'');
+        figs.append(figure('关注',fans==null?'—':number(fans),fav&&fav.total?AdminCharts.sparkline(fav.line):cumul('fans_count'),fav?`近 ${data.days.length} 天 +${number(fav.total)}`:''),
+          figure('浏览量',val('hits_total','page_view_count')==null?'—':number(val('hits_total','page_view_count')),cumul('hits_total')),
+          third,
+          figure('官方评分',s.rating_score==null?'暂无':Number(s.rating_score).toFixed(1)+' /10',null,
+            reviews.length?reviews.map(([n,v])=>`${n} ${number(v)}`).join(' · '):(s.review_count!=null?`评价 ${number(s.review_count)}`:'')));
         head.append(el('span','muted small',`官方数据更新于 ${ago(game.official_fetched_at)}`));
       } else {
         const d=game.public_daily, fig=(label,key,format=number)=>{
@@ -621,11 +630,11 @@
     if (data.games.every(g=>!g.official_daily.length && g.public_daily.length<2)) {host.replaceChildren(); return;}
     const official=data.games.filter(g=>g.official && g.official_daily.length);
     if (official.length) {
-      const keys=['download_count','reserve_count'].filter(k=>official.some(g=>g.official_daily.some(r=>r[k]!=null)));
-      const use=keys.length?keys:['page_view_count'];
-      const daily=data.days.map(day=>{const row={date:day}; use.forEach(k=>{row[k]=official.reduce((sum,g)=>sum+(g.official_daily.find(r=>r.day===day)?.[k]||0),0);}); return row;});
-      const names={download_count:['下载量','var(--c-review)'],reserve_count:['预约量','var(--c-topic)'],page_view_count:['曝光量','var(--c-topic)']};
-      AdminCharts.trend(host,daily,{series:use.map(k=>[k,...names[k]]),unit:'',label:'每日官方数据',emptyText:'官方数据暂无每日趋势。'});
+      // 官方接口按天返回的是新增量：关注、好评、差评、下载请求
+      const names=[['favorite_trend_value','新增关注','var(--c-topic)'],['positive_count','新增好评','var(--ok)'],['negative_count','新增差评','var(--danger)'],['download_request_count','下载请求','var(--warn)']];
+      const use=names.filter(([k])=>official.some(g=>g.official_daily.some(r=>r[k])));
+      const daily=data.days.map(day=>{const row={date:day}; use.forEach(([k])=>{row[k]=official.reduce((sum,g)=>sum+(g.official_daily.find(r=>r.day===day)?.[k]||0),0);}); return row;});
+      AdminCharts.trend(host,daily,{series:use.length?use:names.slice(0,1),unit:'',label:'每日官方数据',emptyText:'官方数据暂无每日趋势。'});
     } else {
       const sum=key=>data.days.map((day,i)=>data.games.reduce((total,g)=>total+increments(g.public_daily,key,data.days)[i],0));
       const fans=sum('fans_count'), reviews=sum('review_count');

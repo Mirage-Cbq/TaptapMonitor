@@ -9,8 +9,8 @@
   --font:"PingFang SC","Microsoft YaHei","HarmonyOS Sans SC",system-ui,sans-serif;
 }
 *{box-sizing:border-box}
-html{scroll-behavior:smooth;scroll-padding-top:84px}
-main{overflow-x:clip}
+html{overflow-x:hidden;overflow-x:clip;scroll-behavior:smooth;scroll-padding-top:84px}
+main{overflow-x:hidden;overflow-x:clip}
 body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--font);line-height:1.6;-webkit-font-smoothing:antialiased;overflow-wrap:anywhere}
 a{color:inherit;text-decoration:none}
 img{display:block;max-width:100%}
@@ -54,7 +54,7 @@ h1,h2,h3,p,dl,dd,figure{margin:0}
 
 /* 首屏 */
 .hero{position:relative;isolation:isolate;max-width:var(--wrap);margin:0 auto;padding:40px var(--gutter) 64px;display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);align-items:center;gap:48px;min-height:min(680px,calc(100svh - 72px))}
-.hero:before{content:"";position:absolute;inset:-72px -20vw -160px;z-index:-1;background:radial-gradient(40% 50% at 78% 40%,#dbe9c4 0,transparent 70%),radial-gradient(30% 40% at 95% 85%,#fde6b6 0,transparent 70%);pointer-events:none}
+.hero:before{content:"";position:absolute;inset:-72px 0 -160px -20vw;z-index:-1;background:radial-gradient(40% 50% at 78% 40%,#dbe9c4 0,transparent 70%),radial-gradient(30% 40% at 95% 85%,#fde6b6 0,transparent 70%);pointer-events:none}
 .hero h1{font-size:clamp(42px,6vw,76px);line-height:1.12;letter-spacing:-3px;font-weight:850;margin:22px 0 14px;text-wrap:balance}
 .hero-tagline{font-size:clamp(20px,2.2vw,28px);font-weight:700;line-height:1.5;letter-spacing:-.5px;text-wrap:balance}
 .hero-intro{font-size:16px;line-height:1.9;color:var(--muted);max-width:30em;margin-top:12px;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}

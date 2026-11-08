@@ -1285,3 +1285,26 @@ def test_fresh_install_without_studios_shows_welcome_page(tmp_path):
         response = client.get('/')
         assert response.status_code == 200 and '还没有添加要监测的 TapTap 厂商' in response.text and 'href="/admin"' in response.text
         assert client.get('/public/site').status_code == 404
+
+
+def test_official_summary_reads_live_store_snapshot_and_review_trend():
+    from taptap_monitor.official import daily_metrics, official_summary, report_data
+    reports = {
+        "store_overview": {"data": {"app_id": 1, "data": {"page_view_count": 2316, "download_count": 0, "reserve_count": 9,
+                           "trend": [{"date": "2026-11-08", "download_request_count": 2}]}}},
+        "review_overview": {"data": {"data": {"rating_summary": {"stat": {"review_count": 29}}, "positive_review_count": 13,
+                            "neutral_review_count": 2, "negative_review_count": 6,
+                            "rating_trend": [{"date": "2026-11-08", "timestamp": 1794067200, "positive_count": 3, "negative_count": 1}]}}},
+        "community_overview": {"data": {"data": {"favorite_count": 1941, "topic_trend": [{"date": "2026-11-08", "value": 2}],
+                               "favorite_trend": [{"date": "2026-11-08", "value": 5}]}}},
+        "store_snapshot": {"data": {"data": {"app": {"stat": {"rating": {"score": "7.7", "latest_version_score": "0"},
+                           "vote_info": {"1": 4, "5": 11}, "fans_count": 1901, "hits_total": 2316, "reserve_count": 9, "wish_count": 3}}}}},
+    }
+    summary = official_summary(reports)
+    assert summary["rating_score"] == 7.7 and summary["latest_version_score"] is None
+    assert summary["review_count"] == 29 and summary["fans_count"] == 1901 and summary["vote_info"]["5"] == 11
+    assert summary["positive_review_count"] == 13 and summary["reserve_count"] == 9 and summary["wish_count"] == 3
+    days = dict(daily_metrics(report_data(reports["review_overview"]["data"])))
+    assert days["2026-11-08"]["positive_count"] == 3 and "timestamp" not in days["2026-11-08"]
+    community = dict(daily_metrics(report_data(reports["community_overview"]["data"])))
+    assert community["2026-11-08"] == {"topic_trend_value": 2} or community["2026-11-08"].get("favorite_trend_value") == 5

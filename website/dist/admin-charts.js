@@ -27,7 +27,7 @@
     const visible = series.filter(([key]) => !hiddenSeries.has(key));
     if (!daily.some(day => series.some(([key]) => day[key]))) {empty(host, config.emptyText || '所选范围内没有新增反馈。'); return;}
     host.replaceChildren();
-    const W = Math.max(320, host.clientWidth || 800), H = W < 520 ? 220 : 260, L = 34, R = 8, T = 12, B = 28;
+    const W = Math.max(320, host.clientWidth || host.parentElement?.clientWidth || 800), H = W < 520 ? 220 : 260, L = 34, R = 8, T = 12, B = 28;
     const totals = daily.map(day => visible.reduce((sum, [key]) => sum + (day[key] || 0), 0));
     const {max, step} = niceMax(Math.max(1, ...totals));
     const wrap = html('div', 'chart-wrap'), tip = html('div', 'chart-tip'); tip.hidden = true;
