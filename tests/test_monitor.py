@@ -1515,3 +1515,14 @@ def test_restart_does_not_rescan_before_poll_interval(settings, store):
     with TestClient(create_app(replace(settings, cache_images=False), client=Source())) as client:
         time.sleep(0.3)
         assert calls == [] and not client.get("/api/status", headers={"Authorization": "Bearer " + settings.api_token}).json()["collecting"]
+
+
+def test_page_assets_revalidate_and_waf_block_is_explained(settings, store):
+    blocked = httpx.MockTransport(lambda request: httpx.Response(405, headers={"content-type": "text/html; charset=utf-8", "server": "Tengine"}, text="<!doctypehtml>"))
+    headers = {"Authorization": "Bearer " + settings.api_token}
+    with TestClient(create_app(settings, scheduler_enabled=False, console_transport=blocked)) as client:
+        for path in ("/admin.js", "/admin.css"):
+            assert client.get(path).headers["cache-control"] == "no-cache"
+        assert client.get("/api/status", headers=headers).headers["cache-control"] == "no-store"
+        status = client.post("/api/console/login", headers=headers).json()
+        assert status["auth"]["status"] == "failed" and "拦截" in status["auth"]["message"] and "手动粘贴 Cookie" in status["auth"]["message"]

@@ -230,6 +230,9 @@ class TapLogin:
         try:
             payload = response.json()
         except ValueError:
+            if response.status_code == 405 and "text/html" in response.headers.get("content-type", ""):
+                # TapTap's WAF rejects login endpoints from many cloud-server IPs; this is not retryable from here.
+                raise ConsoleError(f"{what}拦截了这台服务器的 IP（云服务器常见），无法在服务器上扫码登录，请改用下方「手动粘贴 Cookie」") from None
             raise ConsoleError(f"{what}返回了非 JSON 内容（HTTP {response.status_code}）") from None
         data = payload.get("data") if isinstance(payload, dict) else None
         if isinstance(payload, dict) and payload.get("success") is True:

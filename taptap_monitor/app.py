@@ -177,8 +177,12 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True, console_tr
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-        if request.url.path.startswith("/api/"):
+        path = request.url.path
+        if path.startswith("/api/"):
             response.headers["Cache-Control"] = "no-store"
+        elif path.endswith((".js", ".css", ".html")) and "cache-control" not in response.headers:
+            # Revalidate page assets (cheap 304 via ETag) so a cached old admin.js never meets a new admin.html.
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     def primary_site():

@@ -796,11 +796,12 @@
       }
       const manual=el('details','console-manual'), summary=el('summary','muted small','备用：手动粘贴 Cookie');
       const input=el('textarea'); input.rows=3; input.maxLength=16384; input.autocomplete='off'; input.spellcheck=false;
-      input.placeholder='在已登录的 developer.taptap.cn 按 F12 → Network，刷新后点任意 /api/ 请求，复制请求头里的 Cookie 粘贴到这里';
+      input.placeholder='在电脑浏览器登录 developer.taptap.cn，按 F12 → Network（网络），刷新页面后点任意 /api/ 请求，复制请求头里 Cookie 的整段值粘贴到这里';
       const save=button('保存并连接',async()=>{
         if (!input.value.trim()) throw new Error('请先粘贴 Cookie');
         const result=await api('console','PUT',{cookie:input.value.trim()}); input.value=''; renderConsole(result); notify('已连接开发者后台，正在同步数据。'); await loadOfficial();
       },'ghost');
+      if (auth.status==='failed' || data.method==='cookie') manual.open=true;
       manual.append(summary,input,save);
       box.append(login,manual);
     }
