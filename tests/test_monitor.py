@@ -892,7 +892,7 @@ def test_official_endpoints_and_metrics(settings, store, monkeypatch):
         filtered = client.get('/api/metrics?days=7&app_id=100', headers=headers).json()['games']
         assert len(filtered) == 1 and len(filtered[0]['official_daily']) == 1
         assert client.get('/api/metrics?developer_id=999&app_id=100', headers=headers).json()['games'] == []
-        for days in (6, 181):
+        for days in (6, 366):
             assert client.get(f'/api/metrics?days={days}', headers=headers).status_code == 422
         assert client.delete('/api/official/auth', headers=headers).json()['authorized'] is False
         assert not client.get('/api/metrics?app_id=100', headers=headers).json()['games'][0]['official']
@@ -1331,8 +1331,11 @@ def console_backend(state):
         state.setdefault("cookies", []).append(request.headers.get("cookie"))
         if state.get("expired"):
             return httpx.Response(401, json={"success": False, "data": {"code": -1, "error": "access_denied", "msg": "未认证"}})
+        from datetime import date, timedelta
         path, query = request.url.path, request.url.params
-        rows = lambda *items: {"success": True, "data": {"list": list(items)}}
+        end = query.get("end_date") or query.get("end_time")
+        live = not end or date.fromisoformat(end) >= date.today() - timedelta(days=100)  # the game launched ~100 days ago
+        rows = lambda *items: {"success": True, "data": {"list": list(items) if live else []}}
         day = query.get("start_date") or query.get("start_time")
         payloads = {
             "/api/user/v1/me": {"success": True, "data": {"user": {"name": "Studio Owner"}}},
@@ -1351,6 +1354,7 @@ def console_backend(state):
 
 
 def test_console_session_syncs_funnel_and_revenue_without_exposing_cookie(settings, store):
+    from datetime import date
     backend = {}
     headers = {"Authorization": "Bearer " + settings.api_token}
     with TestClient(create_app(settings, scheduler_enabled=False, console_transport=console_backend(backend))) as client:
@@ -1366,11 +1370,25 @@ def test_console_session_syncs_funnel_and_revenue_without_exposing_cookie(settin
             time.sleep(0.02)
         assert status["error"] is None and set(backend["cookies"]) == {"session=abc123"}
         assert any("app_id=100" in url for url in backend["urls"]) and not any("app_id=200" in url for url in backend["urls"])
-        game = next(g for g in client.get("/api/metrics?days=30", headers=headers).json()["games"] if g["app_id"] == 100)
-        row = game["console_daily"][0]
+        game = next(g for g in client.get("/api/metrics?days=365", headers=headers).json()["games"] if g["app_id"] == 100)
+        row = game["console_daily"][-1]
         assert row["impressions"] == 1000 and row["click_rate"] == pytest.approx(0.1) and row["launches"] == 40
         assert row["ad_revenue"] == 12.34 and row["active_devices"] == 50 and row["store_page_views"] == 120
         assert "secret" not in json.dumps(store.setting("console"))
+        # First sync walks back in 90-day chunks and stops at the first empty one (before launch).
+        windows = [url for url in backend["urls"] if "stats-by-day/position" in url]
+        assert len(windows) == 3 and store.setting("console")["backfilled"] == [100]
+        assert len({row["day"] for row in store.metrics([100], "console")}) == 2
+        # Routine syncs then refresh only the last 30 days; ?full=true walks the history again.
+        backend["urls"].clear()
+        client.post("/api/console/sync", headers=headers)
+        wait_for(client, headers, lambda s: not s["syncing"])
+        windows = [httpx.URL(url).params for url in backend["urls"] if "stats-by-day/position" in url]
+        assert len(windows) == 1 and (date.fromisoformat(windows[0]["end_date"]) - date.fromisoformat(windows[0]["start_date"])).days == 29
+        backend["urls"].clear()
+        client.post("/api/console/sync?full=true", headers=headers)
+        wait_for(client, headers, lambda s: not s["syncing"])
+        assert len([url for url in backend["urls"] if "stats-by-day/position" in url]) == 3
         backend["expired"] = True
         client.post("/api/console/sync", headers=headers)
         for _ in range(100):

@@ -32,7 +32,9 @@ HOST = "developer.taptap.cn"
 BROWSER = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
 CHINA = timezone(timedelta(hours=8))  # console dates are China calendar days
 SYNC_SECONDS = 2 * 3600
-WINDOW_DAYS = 30
+WINDOW_DAYS = 30   # routine syncs refresh this many recent days (retention and revenue settle late)
+CHUNK_DAYS = 90    # the store page-view endpoint rejects spans over 90 days
+MAX_CHUNKS = 40    # history walk stops at the first empty chunk, or after ~10 years
 RETENTION = (("ret_new_active_device_rate_a1d", "retention_1d", 1),
              ("ret_new_active_device_rate_a3d", "retention_3d", 3),
              ("ret_new_active_device_rate_a7d", "retention_7d", 7))
@@ -293,7 +295,8 @@ class TapLogin:
         return header, jar
 
 
-EMPTY = dict(cookie=None, jar=[], method=None, valid=False, account=None, developers=[], apps=[], synced_at=None, error=None)
+EMPTY = dict(cookie=None, jar=[], method=None, valid=False, account=None, developers=[], apps=[], backfilled=[],
+             synced_at=None, error=None)
 SECRET = ("cookie", "jar")
 
 
@@ -429,11 +432,13 @@ class ConsoleService:
         self.persist()
         return self.status()
 
-    def start_sync(self):
+    def start_sync(self, full=False):
         if not self.state["cookie"] or not self.state["valid"]:
             raise ConsoleError("请先扫码登录开发者后台")
         if self.syncing:
             raise ConsoleError("开发者后台数据正在同步")
+        if full:
+            self.state["backfilled"] = []
         self.task = asyncio.create_task(self.sync())
         return self.status()
 
@@ -442,18 +447,36 @@ class ConsoleService:
                 and time.time() - (self.state["synced_at"] or 0) >= SYNC_SECONDS:
             self.start_sync()
 
+    @staticmethod
+    async def history(client, app, today):
+        """Walk back in 90-day chunks until a chunk has no activity (before launch); drop pre-launch zeros."""
+        found, end = {}, today
+        for _ in range(MAX_CHUNKS):
+            start = end - timedelta(days=CHUNK_DAYS - 1)
+            days = await client.figures(app["developer_id"], app["app_id"], start, end, today)
+            found.update(days)
+            if not any(any(values.values()) for values in days.values()):
+                break
+            end = start - timedelta(days=1)
+        first = min((day for day, values in found.items() if any(values.values())), default=None)
+        return {day: values for day, values in found.items() if first and day >= first}
+
     async def collect(self, errors):
         client = self.client()
-        today = datetime.now(CHINA).date()
         # Console dates are China calendar days; end_date may not be in the future, and "today" is included.
-        start, end = today - timedelta(days=WINDOW_DAYS - 1), today
+        today = datetime.now(CHINA).date()
         try:
             monitored = {game["id"] for game in self.store.games()}
             for app in self.state["apps"]:
                 if app["app_id"] not in monitored:
                     continue
                 try:
-                    days = await client.figures(app["developer_id"], app["app_id"], start, end, today)
+                    if app["app_id"] in self.state["backfilled"]:
+                        days = await client.figures(app["developer_id"], app["app_id"], today - timedelta(days=WINDOW_DAYS - 1), today, today)
+                    else:  # first sync of this game: fetch everything since launch
+                        days = await self.history(client, app, today)
+                        if days:  # drop pre-launch zero rows left by earlier window-only syncs
+                            self.store.delete_metrics(app["app_id"], "console", min(days))
                 except ConsoleAuthError:
                     raise
                 except ConsoleError as exc:
@@ -461,6 +484,9 @@ class ConsoleService:
                     continue
                 for day, values in days.items():
                     self.store.save_metrics(app["app_id"], "console", values, day)
+                if app["app_id"] not in self.state["backfilled"]:
+                    self.state["backfilled"] = [*self.state["backfilled"], app["app_id"]]
+                    self.persist()
         finally:
             await client.close()
 

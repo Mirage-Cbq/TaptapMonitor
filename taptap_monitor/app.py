@@ -298,14 +298,14 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True, console_tr
         return await console.clear()
 
     @api.post("/console/sync", status_code=202)
-    async def console_sync():
+    async def console_sync(full: bool = False):
         try:
-            return console.start_sync()
+            return console.start_sync(full)
         except ConsoleError as exc:
             raise HTTPException(409, str(exc)) from exc
 
     @api.get("/metrics")
-    async def metrics(days: int = Query(30, ge=7, le=180), developer_id: int | None = Query(None, gt=0),
+    async def metrics(days: int = Query(30, ge=7, le=365), developer_id: int | None = Query(None, gt=0),
                       app_id: int | None = Query(None, gt=0)):
         result = official.metrics(days, developer_id, app_id)
         ids = [game["app_id"] for game in result["games"]]

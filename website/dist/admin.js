@@ -772,7 +772,11 @@
       who.append(el('strong','',data.account?.name || '开发者后台账号'),el('span','muted small',data.syncing?'正在同步开发者后台数据…':`最近同步：${data.synced_at?date(data.synced_at):'尚未同步'}${data.method==='qr'?' · 扫码登录':data.method==='cookie'?' · Cookie':''}`));
       head.append(who,el('span','chip '+(data.valid?'ok':'muted'),data.valid?'已连接':'已失效')); box.append(head);
       const actions=el('div','actions');
-      if (data.valid) {const sync=button(data.syncing?'同步中…':'立即同步',async()=>{renderConsole(await api('console/sync','POST')); await loadOfficial();},'primary'); sync.disabled=data.syncing; actions.append(sync);}
+      if (data.valid) {
+        const sync=button(data.syncing?'同步中…':'立即同步',async()=>{renderConsole(await api('console/sync','POST')); await loadOfficial();},'primary');
+        const full=button('重新获取全部历史',async()=>{if (!confirm('将从各作品上线日起重新获取全部开发者后台数据，可能需要一两分钟。确定吗？')) return; renderConsole(await api('console/sync?full=true','POST')); await loadOfficial();},'ghost');
+        sync.disabled=full.disabled=data.syncing; actions.append(sync,full);
+      }
       actions.append(button('退出登录',async()=>{if (!confirm('确定退出开发者后台登录吗？已同步的数据会保留。')) return; renderConsole(await api('console','DELETE')); notify('已退出开发者后台登录。');},'ghost'));
       box.append(actions);
     }

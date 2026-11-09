@@ -189,6 +189,10 @@ class Store:
             db.execute("INSERT INTO metrics VALUES(?,?,?,?,?) ON CONFLICT(app_id,source,day) DO UPDATE SET data=excluded.data,captured_at=excluded.captured_at",
                        (app_id, source, day, json.dumps(merged, ensure_ascii=False), time.time()))
 
+    def delete_metrics(self, app_id, source, before):
+        with self.connect() as db:
+            db.execute("DELETE FROM metrics WHERE app_id=? AND source=? AND day<?", (app_id, source, before))
+
     def metrics(self, app_ids, source, since=None):
         if not app_ids:
             return []
