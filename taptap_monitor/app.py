@@ -28,6 +28,7 @@ from .lock import ProcessLock
 from .upgrade import Updater, UpgradeError
 from .media import MediaCache
 from .official import OfficialBridge, OfficialError, OfficialService
+from .console import ConsoleError, ConsoleService
 from .insights import analyze
 
 log = logging.getLogger(__name__)
@@ -72,6 +73,10 @@ class GameUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=10000)
 
 
+class ConsoleSession(BaseModel):
+    cookie: str = Field(min_length=3, max_length=16384)
+
+
 class UpgradeRequest(BaseModel):
     ref: str = Field(default="latest", pattern=r"^(latest|[0-9a-f]{7,40})$")
 
@@ -80,7 +85,7 @@ class AutoUpgrade(BaseModel):
     enabled: bool
 
 
-def create_app(settings=None, *, client=None, scheduler_enabled=True):
+def create_app(settings=None, *, client=None, scheduler_enabled=True, console_transport=None):
     settings = settings or Settings.load(os.environ.get("MONITOR_CONFIG", "config.toml"))
     if len(settings.api_token) < 24 or settings.api_token.startswith("replace-"):
         raise ValueError("Set MONITOR_API_TOKEN to a random token with at least 24 characters")
@@ -92,7 +97,10 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
     overrides = RuntimeUpdate(**store.setting("runtime", {})).model_dump(exclude_none=True, exclude_unset=True)
     for key in RUNTIME_FIELDS:
         setattr(settings, key, overrides.get(key, defaults[key]))
+    removed = set(store.setting("removed_developers", []))
     for developer in settings.developers:
+        if developer["id"] in removed:
+            continue
         store.add_developer(developer["id"], developer.get("name", ""), developer.get("target_umo", ""))
         if developer.get("logo") and "logo_url" not in store.presentation(developer["id"])["custom"]:
             store.save_presentation(developer["id"], {"logo_url": developer["logo"]})
@@ -101,6 +109,7 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
     delivery = Delivery(store, settings)
     updater = Updater(Path(settings.database).resolve().parent, Path(__file__).resolve().parent.parent)
     official = OfficialService(store, OfficialBridge(Path(settings.database).resolve().parent))
+    console = ConsoleService(store, console_transport)
     scan_task = None
     active_run = None
     pending_developers = {}
@@ -118,17 +127,21 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
         return active_run
 
     async def schedule():
-        last_scan = time.monotonic() - settings.poll_seconds
+        # Resume the schedule from the last recorded run so a restart does not trigger a scan;
+        # only a fresh install (no runs yet) collects right away.
+        last_run = store.query("SELECT MAX(started_at) AS t FROM runs")[0]["t"]
+        last_scan = last_run if last_run is not None else time.time() - settings.poll_seconds
         while True:
             try:
                 if pending_developers and (not scan_task or scan_task.done()):
                     developer_id = next(iter(pending_developers))
                     start_scan(developer_id, pending_developers.pop(developer_id))
-                if time.monotonic() - last_scan >= settings.poll_seconds:
+                if time.time() - last_scan >= settings.poll_seconds:
                     if not scan_task or scan_task.done():
                         start_scan()
-                        last_scan = time.monotonic()
+                        last_scan = time.time()
                 await delivery.tick()
+                console.sync_if_due()
             except Exception:
                 log.exception("Scheduler iteration failed")
             await asyncio.sleep(15)
@@ -150,12 +163,14 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
                     await source.close()
                 finally:
                     await official.close()
+                    await console.close()
 
     app = FastAPI(title="TapTap 作品监测", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     app.state.store = store
     app.state.collector = collector
     app.state.settings = settings
     app.state.official = official
+    app.state.console = console
 
     @app.middleware("http")
     async def response_headers(request, call_next):
@@ -208,12 +223,22 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
         if store.developer(body.id):
             raise HTTPException(409, "Developer already subscribed")
         store.add_developer(body.id, body.name, body.target_umo)
+        store.save_setting("removed_developers", [d for d in store.setting("removed_developers", []) if d != body.id])
         if scheduler_enabled:
             if scan_task and not scan_task.done():
                 pending_developers[body.id] = "full"
             else:
                 start_scan(body.id, "full")
         return store.developer(body.id)
+
+    @api.delete("/developers/{developer_id}")
+    async def delete_developer(developer_id: int):
+        if not store.developer(developer_id):
+            raise HTTPException(404, "Developer not found")
+        if scan_task and not scan_task.done():
+            raise HTTPException(409, "A collection run is already active")
+        pending_developers.pop(developer_id, None)
+        return store.delete_developer(developer_id)
 
     @api.patch("/developers/{developer_id}")
     async def update_developer(developer_id: int, body: DeveloperUpdate):
@@ -253,10 +278,42 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True):
         except OfficialError as exc:
             raise HTTPException(409, str(exc)) from exc
 
+    @api.get("/console")
+    async def console_status():
+        return console.status()
+
+    @api.put("/console")
+    async def console_configure(body: ConsoleSession):
+        try:
+            return await console.configure(body.cookie)
+        except ConsoleError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @api.post("/console/login", status_code=202)
+    async def console_login():
+        return await console.begin_login()
+
+    @api.delete("/console")
+    async def console_clear():
+        return await console.clear()
+
+    @api.post("/console/sync", status_code=202)
+    async def console_sync():
+        try:
+            return console.start_sync()
+        except ConsoleError as exc:
+            raise HTTPException(409, str(exc)) from exc
+
     @api.get("/metrics")
     async def metrics(days: int = Query(30, ge=7, le=180), developer_id: int | None = Query(None, gt=0),
                       app_id: int | None = Query(None, gt=0)):
         result = official.metrics(days, developer_id, app_id)
+        ids = [game["app_id"] for game in result["games"]]
+        # Console rows use China dates, which can be a day ahead of the server's local date.
+        rows = store.metrics(ids, "console", result["days"][0])
+        for game in result["games"]:
+            game["console_daily"] = [{key: value for key, value in row.items() if key != "app_id"}
+                                     for row in rows if row["app_id"] == game["app_id"]]
         if developer_id is None:
             result["games"] = primary_games_first(result["games"], "app_id")
         return result

@@ -144,6 +144,30 @@ class Store:
                 db.execute("INSERT INTO settings VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                            (f"developer_name:{developer_id}", json.dumps(fields["name"], ensure_ascii=False)))
 
+    def delete_developer(self, developer_id):
+        """Remove a developer, its site and the games no other developer monitors (with their data)."""
+        with self.connect() as db:
+            owned = [row[0] for row in db.execute(
+                """SELECT app_id FROM developer_games WHERE developer_id=? AND app_id NOT IN
+                   (SELECT app_id FROM developer_games WHERE developer_id!=?)""", (developer_id, developer_id))]
+            removed = {"games": len(owned), "items": 0}
+            for table in ("developer_games", "sites", "game_settings", "deliveries"):  # links first: foreign keys are on
+                db.execute(f"DELETE FROM {table} WHERE developer_id=?", (developer_id,))
+            for app_id in owned:
+                removed["items"] += db.execute("SELECT COUNT(*) FROM items WHERE app_id=? AND kind IN ('review','topic')", (app_id,)).fetchone()[0]
+                for table in ("items", "events", "metrics", "official_reports", "game_settings"):
+                    db.execute(f"DELETE FROM {table} WHERE app_id=?", (app_id,))
+                db.execute("DELETE FROM games WHERE id=?", (app_id,))
+                for prefix in (f"reviews:{app_id}", f"topics:{app_id}", f"comments:{app_id}:", f"replies:{app_id}:"):
+                    db.execute("DELETE FROM streams WHERE key=? OR substr(key,1,?)=?", (prefix, len(prefix), prefix))
+            db.execute("DELETE FROM streams WHERE key=?", (f"games:{developer_id}",))
+            db.execute("DELETE FROM settings WHERE key=?", (f"developer_name:{developer_id}",))
+            db.execute("DELETE FROM settings WHERE key='primary_site' AND value=?", (str(developer_id),))
+            db.execute("DELETE FROM developers WHERE id=?", (developer_id,))
+        # Remember the removal so a developer listed in config.toml is not re-seeded on restart.
+        self.save_setting("removed_developers", sorted({*self.setting("removed_developers", []), developer_id}))
+        return removed
+
     def save_game(self, developer_id: int, app: dict, group_id=None):
         # Keep only public game metadata, without analytics/tracking payloads.
         metadata = {k: app[k] for k in ("id", "title", "icon", "cover", "ad_banner", "description", "stat", "is_level", "tags", "_media") if k in app}

@@ -8,10 +8,8 @@ Authorization is TapTap's device-code flow: the admin scans a QR code with the
 TapTap app; the resulting token is stored by the package in our data dir.
 """
 import asyncio
-import base64
 from contextlib import suppress
 from datetime import date, datetime, timedelta, timezone
-from io import BytesIO
 import json
 import logging
 import math
@@ -21,11 +19,15 @@ import shutil
 from pathlib import Path
 import time
 
-import segno
+from .console import qr_data_uri
 
 log = logging.getLogger(__name__)
 
-DEFAULT_SERVER = "/opt/taptap-monitor/official/node_modules/@taptap/instant-games-open-mcp/dist/server.js"
+PACKAGE_SERVER = "node_modules/@taptap/instant-games-open-mcp/dist/server.js"
+INSTALLED_SERVER = Path("/opt/taptap-monitor/official") / PACKAGE_SERVER
+# Local development: `npm ci` inside deploy/official of this checkout.
+CHECKOUT_SERVER = Path(__file__).resolve().parent.parent / "deploy" / "official" / PACKAGE_SERVER
+DEFAULT_SERVER = str(INSTALLED_SERVER if INSTALLED_SERVER.is_file() or not CHECKOUT_SERVER.is_file() else CHECKOUT_SERVER)
 PROTOCOL = "2025-06-18"
 
 
@@ -302,10 +304,7 @@ class OfficialService:
                 else:
                     self.state.update(authorized=False, account=None, apps=[], error=None)
                     self.persist()
-                    qr = segno.make(data["qrcode_url"], micro=False)
-                    svg = BytesIO()
-                    qr.save(svg, kind="svg", scale=max(1, round(200 / qr.symbol_size()[0])), light="white", dark="black")
-                    self.auth = dict(status="waiting", qr="data:image/svg+xml;base64," + base64.b64encode(svg.getvalue()).decode(),
+                    self.auth = dict(status="waiting", qr=qr_data_uri(data["qrcode_url"]),
                                      auth_url=data.get("auth_url"), expires_at=time.time() + float(data.get("expires_in", 300)),
                                      message="请使用 TapTap App 扫码授权")
                     self.auth_task = asyncio.create_task(self.poll_auth(max(0.01, float(data.get("interval", 2)))))

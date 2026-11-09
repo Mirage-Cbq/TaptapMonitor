@@ -13,3 +13,4 @@ config.local.toml
 VERSION.json
 config.toml
 release/
+node_modules/

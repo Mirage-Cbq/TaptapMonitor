@@ -42,7 +42,7 @@
         <a href="#/data" data-view="data"><svg><use href="#i-data"/></svg><span>反馈数据</span></a>
         <a href="#/insights" data-view="insights"><svg><use href="#i-insight"/></svg><span>数据洞察</span></a>
         <a href="#/developers" data-view="developers"><svg><use href="#i-studio"/></svg><span>厂商与官网</span></a>
-        <a href="#/runs" data-view="runs"><svg><use href="#i-runs"/></svg><span>采集运行</span></a>
+        <a href="#/sources" data-view="sources"><svg><use href="#i-runs"/></svg><span>数据源</span></a>
         <a href="#/settings" data-view="settings"><svg><use href="#i-settings"/></svg><span>系统设置</span></a>
       </nav>
       <div class="sidebar-footer">
@@ -65,16 +65,17 @@
           <div class="segmented" id="range" role="radiogroup" aria-label="时间范围"><button type="button" data-days="7" role="radio">7 天</button><button type="button" data-days="30" role="radio" aria-checked="true">30 天</button><button type="button" data-days="90" role="radio">90 天</button></div>
         </div>
         <div id="kpis" class="kpis"></div>
-        <section class="card" id="core-card"><div class="card-head"><div><h2>核心数据</h2><p class="muted small">优先使用 TapTap 官方数据；未授权的作品使用公开数据</p></div><button type="button" id="core-auth" class="link-button" hidden>授权官方数据 →</button></div><div id="core-games" class="core-games"></div><div id="core-trend" class="core-trend"></div></section>
+        <section class="card" id="games-card"><div class="card-head"><div><h2>作品一览</h2><p class="muted small">所选时间范围内的合计；点击作品查看详情</p></div><button type="button" id="core-auth" class="link-button" hidden>授权官方数据 →</button></div><div id="game-overview"></div></section>
+        <section class="card" id="core-card" hidden><div class="card-head"><div><h2>作品详情</h2><p class="muted small">优先使用 TapTap 官方数据；开发者后台提供曝光漏斗、活跃与广告收益</p></div><button type="button" id="core-back" class="link-button">← 全部作品</button></div><div id="core-games" class="core-games"></div><div id="core-trend" class="core-trend"></div></section>
+        <div class="grid-2" id="console-charts" hidden>
+          <section class="card"><div class="card-head"><div><h2>每日转化（启动）</h2><p class="muted small">按作品堆叠 · 开发者后台</p></div></div><div id="launch-trend"></div></section>
+          <section class="card"><div class="card-head"><div><h2>每日广告收益</h2><p class="muted small">平台预估收益（元），以每月结算为准</p></div></div><div id="revenue-trend"></div></section>
+        </div>
         <div class="grid-3">
           <section class="card span-2"><div class="card-head"><div><h2>每日新增反馈</h2><p class="muted small">按发布时间统计评价与论坛帖子，回复计入所属内容</p></div></div><div id="trend"></div></section>
           <section class="card"><div class="card-head"><div><h2>评分分布</h2><p class="muted small">十分制 · 玩家评价</p></div></div><div id="scores"></div></section>
         </div>
-        <div class="grid-3">
-          <section class="card span-2"><div class="card-head"><div><h2>作品表现</h2><p class="muted small">TapTap 评分、评价与帖子数量及其回复</p></div></div><div id="game-comparison"></div></section>
-          <section class="card"><div class="card-head"><div><h2>最新反馈</h2></div><a href="#/data" class="link">全部 →</a></div><div id="latest" class="latest"></div></section>
-        </div>
-        <section class="card"><div class="card-head"><div><h2>最近采集</h2><p id="success-rate" class="muted small"></p></div><a href="#/runs" class="link">运行记录 →</a></div><div id="run-strip" class="run-strip"></div></section>
+        <section class="card"><div class="card-head"><div><h2>最新反馈</h2></div><a href="#/data" class="link">全部反馈 →</a></div><div id="latest" class="latest latest-grid"></div></section>
       </section>
 
       <!-- 反馈数据 -->
@@ -114,7 +115,6 @@
               <button type="button" role="tab" data-tab="site" aria-selected="true">官网内容</button>
               <button type="button" role="tab" data-tab="games" aria-selected="false">作品展示</button>
               <button type="button" role="tab" data-tab="monitor" aria-selected="false">监测与推送</button>
-              <button type="button" role="tab" data-tab="official" aria-selected="false">官方数据</button>
             </div>
             <div class="tab-panel" data-panel="site">
               <form id="site-form" class="form-grid">
@@ -134,9 +134,9 @@
                 <form id="rename-form" class="sub-card"><h3>监测名称</h3><label>名称<input name="name" maxlength="120" required></label><p class="muted small">仅用于后台显示；官网名称在“官网内容”中设置。</p><button>保存名称</button></form>
                 <form id="subscription-form" class="sub-card"><h3>定时监测与推送</h3><label class="switch"><input name="enabled" type="checkbox"><span class="track"></span>启用定时监测</label><label>AstrBot 接收会话<input name="target_umo" maxlength="300" placeholder="平台:消息类型:会话 ID"></label><p class="muted small">在“系统设置”开启简报推送后，新增反馈会推送到此会话。</p><button>保存</button></form>
                 <div class="sub-card"><h3>数据同步</h3><p class="muted small">增量同步只获取新增与有变化的内容，定时任务均为增量；全量同步会重新扫描该厂商的全部评价、帖子与回复，耗时较长。</p><div class="actions"><button type="button" id="dev-incremental" class="primary">增量同步</button><button type="button" id="dev-full">全量同步</button></div></div>
+                <div class="sub-card danger-zone"><h3>删除厂商</h3><p class="muted small">停止监测并删除该厂商的官网设置；只属于该厂商的作品及其评价、帖子、回复和统计数据会一并删除，其他厂商共有的作品不受影响。此操作无法撤销。</p><button type="button" id="dev-delete" class="danger-text">删除该厂商</button></div>
               </div>
             </div>
-            <div class="tab-panel" data-panel="official" hidden><div id="official-panel" class="official-panel"></div></div>
           </section>
           <div id="developer-empty" class="card dev-detail placeholder"><p class="muted">从左侧选择一个厂商，管理它的官网内容、作品展示与监测设置。</p></div>
         </div>
@@ -152,7 +152,7 @@
         <div id="insight-kpis" class="kpis"></div>
         <div class="grid-3">
           <section class="card span-2"><div class="card-head"><div><h2>每周评价构成</h2><p class="muted small">好评 8–10 分 · 中评 6 分 · 差评 2–4 分</p></div></div><div id="insight-weekly"></div></section>
-          <section class="card"><div class="card-head"><div><h2>评分可信度</h2><p class="muted small">贝叶斯平均与 Wilson 下界</p></div></div><div id="insight-rating" class="insight-rating"></div></section>
+          <section class="card"><div class="card-head"><div><h2>评分概况</h2><p class="muted small">玩家均分、好评率与近期变化</p></div></div><div id="insight-rating" class="insight-rating"></div></section>
         </div>
         <div class="grid-2">
           <section class="card"><div class="card-head"><div><h2>差评关键词</h2><p class="muted small">在差评中明显更常出现的词</p></div></div><div id="kw-negative" class="keywords"></div></section>
@@ -169,8 +169,9 @@
         <details class="card methods"><summary><strong>分析方法说明</strong></summary><div id="insight-methods" class="method-list"></div></details>
       </section>
 
-      <!-- 采集运行 -->
-      <section id="view-runs" class="view" aria-label="采集运行" hidden>
+      <!-- 数据源 -->
+      <section id="view-sources" class="view" aria-label="数据源" hidden>
+        <div class="grid-2 sources-auth"><div id="official-panel" class="official-panel"></div><div id="console-panel" class="official-panel"></div></div>
         <div id="run-summary" class="kpis"></div>
         <section class="card"><div class="card-head"><div><h2>运行记录</h2><p class="muted small">页面可见时每 10 秒自动刷新</p></div><button id="refresh-runs" type="button">刷新</button></div><div id="runs" class="table-scroll"></div></section>
         <div class="grid-2">

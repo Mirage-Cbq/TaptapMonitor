@@ -10,8 +10,8 @@
   const labels = {review:'评价', topic:'论坛帖子', review_comment:'评价回复', topic_comment:'论坛回复'};
   const statuses = {ok:'完成', partial:'部分完成', running:'进行中', interrupted:'已中断', pending:'待重试', error:'失败', sent:'已发送', sending:'发送中', failed:'失败', restricted:'访问受限'};
   const views = {
-    overview:['概览','玩家反馈与采集状态一览'], data:['反馈数据','检索、查看与导出收录的玩家反馈'], insights:['数据洞察','评分可信度、异常预警、关键词与回复分析'],
-    developers:['厂商与官网','管理监测厂商、官网内容与作品展示'], runs:['采集运行','采集任务、数据源与推送记录'], settings:['系统设置','采集与推送参数，保存后立即生效'],
+    overview:['概览','作品表现与玩家反馈一览'], data:['反馈数据','检索、查看与导出收录的玩家反馈'], insights:['数据洞察','评分概况、异常预警、关键词与回复分析'],
+    developers:['厂商与官网','管理监测厂商、官网内容与作品展示'], sources:['数据源','官方授权、开发者后台登录与采集记录'], settings:['系统设置','采集与推送参数，保存后立即生效'],
   };
   const KINDS = ['review','topic'];  // 回复计入所属的评价/帖子，不单独统计
   const date = value => value ? new Date(value * 1000).toLocaleString('zh-CN', {hour12:false}) : '—';
@@ -30,7 +30,7 @@
   let developers = [], games = [], developerId = null, site = null, view = 'overview', days = 30, tab = 'site';
   let offset = 0, total = 0, filterParams = new URLSearchParams(), status = null;
   let statsTicket = 0, searchTicket = 0, siteTicket = 0, polling = false, runtime = null, overviewData = null;
-  let coreData = null, coreTicket = 0, insightTicket = 0, insightDays = 30, insightData = null, officialTimer = null, defaultsApplied = false;
+  let coreData = null, insightTicket = 0, insightDays = 30, insightData = null, officialTimer = null, defaultsApplied = false;
   const primaryId = () => developers.find(d => d.is_primary)?.id ?? developers[0]?.id ?? null;
   const resets = new Set();
   const PAGE = 20;
@@ -169,50 +169,68 @@
     return params;
   }
   async function loadOverview() {
-    const ticket=++statsTicket, params=overviewQuery(), latestParams=new URLSearchParams(params);
-    params.set('days',days); latestParams.set('limit','6');
-    const [data,latest]=await Promise.all([api('stats?'+params),api('items/search?'+latestParams)]); if (ticket !== statsTicket) return;
-    overviewData=data;
+    const ticket=++statsTicket, params=overviewQuery(), latestParams=new URLSearchParams(params), metricParams=new URLSearchParams(params);
+    params.set('days',days); latestParams.set('limit','6'); metricParams.set('days',Math.max(7,days));
+    const [data,latest,metrics]=await Promise.all([api('stats?'+params),api('items/search?'+latestParams),api('metrics?'+metricParams)]);
+    if (ticket !== statsTicket) return;
+    overviewData=data; coreData=metrics;
     $('#view-subtitle').textContent=`监测 ${number(data.totals.developers)} 个厂商 · ${number(data.totals.games)} 款作品`;
     const t=data.totals, reviewCount=Object.values(data.score_distribution).reduce((a,b)=>a+b,0);
-    const totalsByDay=data.daily.map(day=>KINDS.reduce((s,k)=>s+(day[k]||0),0));
+    const since=metrics.days[0], rows=metrics.games.flatMap(g=>(g.console_daily||[]).filter(r=>r.day>=since));
+    const has=key=>rows.some(r=>r[key]!=null), sum=key=>rows.reduce((total,r)=>total+(r[key]||0),0);
+    const byDay=key=>{const map=new Map(); rows.forEach(r=>{if (r[key]!=null) map.set(r.day,(map.get(r.day)||0)+r[key]);}); return [...map.entries()].sort((a,b)=>a[0]<b[0]?-1:1).map(([,v])=>v);};
+    const feedbackDaily=data.daily.map(day=>KINDS.reduce((total,k)=>total+(day[k]||0),0));
     const scoreMeter=el('div','meter'), fill=el('i'); fill.style.width=`${(t.average_score||0)/5*100}%`; scoreMeter.append(fill);
-    const last=data.runs.items[0], rate=data.runs.success_rate;
-    $('#kpis').replaceChildren(
-      kpi('评价与帖子',number(t.items),[`评价 ${number(data.counts.review)}`,`帖子 ${number(data.counts.topic)}`,`回复 ${number(t.replies ?? ((data.counts.review_comment||0)+(data.counts.topic_comment||0)))}`],AdminCharts.sparkline(totalsByDay)),
-      kpi('近 7 天新增',number(t.recent_7_days),[delta(t.recent_7_days,t.previous_7_days),`上周 ${number(t.previous_7_days)}`,t.recent_replies_7_days==null?'':`新回复 ${number(t.recent_replies_7_days)}`]),
-      kpi('玩家均分',t.average_score==null?'—':[(t.average_score*2).toFixed(1),'/10'],[`基于 ${number(reviewCount)} 条评价`],scoreMeter),
-      kpi('最近采集',last?statuses[last.status]||'未知':'尚未运行',[last?ago(last.started_at):'等待首次运行',rate==null?'':`成功率 ${(rate*100).toFixed(0)}%`]),
-    );
+    const cards=[];
+    if (has('impressions')) {
+      const shown=sum('impressions'), visits=sum('detail_visits'), launches=sum('launches');
+      cards.push(kpi('曝光',number(shown),[`点击率 ${rate(shown?visits/shown:null)}`,`详情页 ${number(visits)}`],AdminCharts.sparkline(byDay('impressions'))),
+        kpi('转化（启动）',number(launches),[`详情页转化率 ${rate(visits?launches/visits:null)}`],AdminCharts.sparkline(byDay('launches'))));
+    }
+    if (has('ad_revenue')) cards.push(kpi('广告收益',yuan(sum('ad_revenue')),['平台预估'],AdminCharts.sparkline(byDay('ad_revenue'))));
+    if (cards.length<2) cards.push(kpi('评价与帖子',number(t.items),[`评价 ${number(data.counts.review)}`,`帖子 ${number(data.counts.topic)}`]));
+    cards.push(kpi('新增反馈',number(feedbackDaily.reduce((a,b)=>a+b,0)),[delta(t.recent_7_days,t.previous_7_days),`近 7 天 ${number(t.recent_7_days)}`],AdminCharts.sparkline(feedbackDaily)),
+      kpi('玩家均分',t.average_score==null?'—':[(t.average_score*2).toFixed(1),'/10'],[`基于 ${number(reviewCount)} 条评价`],scoreMeter));
+    $('#kpis').replaceChildren(...cards); $('#kpis').dataset.count=String(cards.length);
+    const single=!!$('#overview-game').value;
+    $('#games-card').hidden=single; $('#core-card').hidden=!single;
+    if (single) renderCore(); else renderGameOverview(data.games, metrics);
+    drawConsoleCharts();
     AdminCharts.trend($('#trend'),data.daily); AdminCharts.scores($('#scores'),data.score_distribution,t.average_score);
-    renderGameTable(data.games); renderLatest(latest.items); loadCore().catch(error=>AdminCharts.empty($('#core-games'),error.message));
-    $('#success-rate').textContent=`最近 ${data.runs.items.length} 次 · 成功率 ${rate == null ? '—' : (rate*100).toFixed(0)+'%'}`;
-    $('#run-strip').replaceChildren();
-    if (!data.runs.items.length) AdminCharts.empty($('#run-strip'),'尚无运行记录。');
-    data.runs.items.slice().reverse().forEach(run => {
-      const text=`#${run.id} · ${date(run.started_at)} · ${statuses[run.status] || '未知'} · 新增 ${run.new_items} · 修改 ${run.updated_items} · 异常 ${run.error_count}`;
-      const node=button('',async()=>{location.hash='#/runs';},run.status); node.title=text; node.setAttribute('aria-label',text); $('#run-strip').append(node);
-    });
+    renderLatest(latest.items);
   }
-  function renderGameTable(rows) {
-    if (!rows.length) {AdminCharts.empty($('#game-comparison'),'暂无作品，添加厂商并同步后可查看。'); return;}
-    const table=el('table','game-table'), head=el('tr');
-    ['作品','TapTap 评分','玩家均分','评价','评价与帖子','回复'].forEach((h,i)=>{const th=el('th',i?'num':'',h); th.scope='col'; head.append(th);});
-    const thead=el('thead'); thead.append(head); const body=el('tbody'); table.append(thead,body);
-    const main=g=>g.main_count ?? KINDS.reduce((s,k)=>s+(g.counts[k]||0),0);
-    const max=Math.max(1,...rows.map(main));
-    rows.forEach(game=>{
-      const tr=el('tr'), sum=main(game), cell=el('div','game-cell'), info=el('div');
-      const bar=el('div','stack-bar'); bar.style.width=`${Math.max(8,sum/max*100)}%`;
-      KINDS.forEach(k=>{if (!game.counts[k]) return; const seg=el('i'); seg.style.width=`${game.counts[k]/sum*100}%`; seg.style.background=`var(--c-${k})`; seg.title=`${labels[k]} ${game.counts[k]}`; bar.append(seg);});
-      info.append(el('strong','',game.title),bar); cell.append(image(game.icon,'',38),info);
-      const td=el('td'); td.append(cell); tr.append(td);
-      const rating=el('td','num'); rating.append(game.rating==null?'—':el('strong','',game.rating.toFixed(1))); tr.append(rating);
-      tr.append(el('td','num',game.average_score==null?'—':(game.average_score*2).toFixed(1)),el('td','num',number(game.review_count)),el('td','num',number(sum)),
-        el('td','num',number(game.reply_count ?? ((game.counts.review_comment||0)+(game.counts.topic_comment||0)))));
+  async function openGame(appId) {
+    if (![...$('#overview-game').options].some(o=>o.value===String(appId))) {$('#overview-developer').value=''; await gameOptions($('#overview-developer'),$('#overview-game'));}
+    $('#overview-game').value=String(appId); await loadOverview(); scrollTo({top:0});
+  }
+  function renderGameOverview(statsGames, metrics) {
+    const host=$('#game-overview'), since=metrics.days[0], info=new Map(statsGames.map(g=>[g.app_id ?? g.id,g]));
+    $('#core-auth').hidden=!metrics.games.length || metrics.games.some(g=>g.official);
+    if (!metrics.games.length) {AdminCharts.empty(host,'暂无作品，添加厂商并同步后可查看。'); return;}
+    const rows=metrics.games.map(game=>{
+      const daily=(game.console_daily||[]).filter(r=>r.day>=since).sort((a,b)=>a.day<b.day?-1:1), s=info.get(game.app_id)||{};
+      const total=key=>daily.some(r=>r[key]!=null)?daily.reduce((sum,r)=>sum+(r[key]||0),0):null;
+      const last=key=>{for (let i=daily.length-1;i>=0;i--) if (daily[i][key]!=null) return daily[i][key]; return null;};
+      const shown=total('impressions'), visits=total('detail_visits'), launches=total('launches');
+      return {game, icon:game.icon || s.icon, shown, ctr:shown?visits/shown:null, launches, cvr:visits?launches/visits:null,
+        active:last('active_devices'), retention:last('retention_1d'), revenue:total('ad_revenue'),
+        score:game.summary?.rating_score ?? s.rating ?? null, feedback:s.main_count ?? (s.counts?KINDS.reduce((sum,k)=>sum+(s.counts[k]||0),0):null)};
+    });
+    const columns=[['曝光','shown',number],['点击率','ctr',rate],['启动','launches',number],['启动转化率','cvr',rate],['活跃设备','active',number],
+      ['次日留存','retention',rate],['广告收益','revenue',yuan],['评分','score',v=>Number(v).toFixed(1)],['反馈','feedback',number]].filter(([,key])=>rows.some(r=>r[key]!=null));
+    const table=el('table','game-table'), head=el('tr'), thead=el('thead'), body=el('tbody');
+    [['作品'],...columns].forEach(([name],i)=>{const th=el('th',i?'num':'',name); th.scope='col'; head.append(th);});
+    thead.append(head); table.append(thead,body);
+    rows.forEach(row=>{
+      const tr=el('tr','clickable'), cell=el('div','game-cell'), name=el('div'), td=el('td');
+      name.append(el('strong','',row.game.title),el('span','muted small',row.game.official?'官方数据':'公开数据'));
+      cell.append(image(row.icon,'',36),name); td.append(cell); tr.append(td);
+      columns.forEach(([,key,format])=>tr.append(el('td','num',row[key]==null?'—':format(row[key]))));
+      tr.tabIndex=0; tr.title='查看作品详情';
+      const open=guarded(()=>openGame(row.game.app_id)); tr.addEventListener('click',open); tr.addEventListener('keydown',e=>{if (e.key==='Enter') open(e);});
       body.append(tr);
     });
-    const scroller=el('div','table-scroll'); scroller.append(table); $('#game-comparison').replaceChildren(scroller);
+    const scroller=el('div','table-scroll'); scroller.append(table); host.replaceChildren(scroller);
   }
   function renderLatest(items) {
     if (!items.length) {AdminCharts.empty($('#latest'),'暂无反馈。'); return;}
@@ -339,8 +357,6 @@
     tab=name;
     document.querySelectorAll('.tabs [role=tab]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.tab===name)));
     document.querySelectorAll('.tab-panel').forEach(p=>p.hidden=p.dataset.panel!==name);
-    clearTimeout(officialTimer);
-    if (name==='official') loadOfficial().catch(error=>$('#official-panel').replaceChildren(el('p','error',error.message)));
   }
   async function loadSite() {
     const ticket=++siteTicket, id=developerId, data=await api('sites/'+id);
@@ -379,7 +395,7 @@
     });
   }
 
-  /* ---------- 采集运行 ---------- */
+  /* ---------- 数据源：采集记录 ---------- */
   function runErrors(run) {try {const errors=JSON.parse(run.errors); return Array.isArray(errors)?errors:[];} catch {return ['异常记录格式无法读取'];}}
   async function loadRuns(refreshStatus=true) {
     const [runs,deliveries] = await Promise.all([api('runs?limit=100'),api('deliveries?limit=20'),...(refreshStatus?[loadStatus()]:[])]);
@@ -583,15 +599,10 @@
     const node=el('div','core-fig'); node.append(el('span','label',label),el('strong','',value));
     if (sub) node.append(el('span','muted small',sub)); if (spark) node.append(spark); return node;
   }
-  async function loadCore() {
-    const ticket=++coreTicket, params=overviewQuery(); params.set('days',Math.max(7,days));
-    const data=await api('metrics?'+params); if (ticket!==coreTicket) return;
-    coreData=data; renderCore();
-  }
   function renderCore() {
     const data=coreData, host=$('#core-games'); host.replaceChildren();
     $('#core-auth').hidden=!data.games.length || data.games.some(g=>g.official);
-    if (!data.games.length || data.games.every(g=>!g.official && !g.public_daily.length)) {AdminCharts.empty(host,'数据会在下一次同步后出现。'); $('#core-trend').replaceChildren(); return;}
+    if (!data.games.length || data.games.every(g=>!g.official && !g.public_daily.length && !hasConsole(g))) {AdminCharts.empty(host,'数据会在下一次同步后出现。'); $('#core-trend').replaceChildren(); return;}
     data.games.forEach(game=>{
       const card=el('article','core-game'), head=el('div','core-head'), figs=el('div','core-figs');
       head.append(image(game.icon,'',36),el('strong','',game.title),el('span','chip '+(game.official?'ok':'muted'),game.official?'官方':'公开'));
@@ -621,9 +632,52 @@
         };
         figs.append(fig('关注','fans_count'),fig('浏览量','hits_total'),fig('评价数','review_count'),fig('TapTap 评分','rating',v=>Number(v).toFixed(1)+' /10'));
       }
-      card.append(head,figs); host.append(card);
+      card.append(head,figs);
+      if (hasConsole(game)) card.append(...consoleFigures(game));
+      host.append(card);
     });
     drawCoreTrend();
+  }
+  /* 开发者后台：曝光转化漏斗、活跃留存、广告收益（按中国日历日） */
+  const hasConsole=g=>(g.console_daily||[]).some(r=>r.impressions!=null || r.ad_revenue!=null || r.active_devices!=null);
+  const yuan=v=>v==null?'—':'¥'+Number(v).toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const rate=v=>v==null?'—':(v*100).toFixed(1)+'%';
+  const chinaToday=()=>new Date(Date.now()+8*3600000).toISOString().slice(0,10);
+  const prevDay=day=>new Date(Date.parse(day+'T00:00:00Z')-86400000).toISOString().slice(0,10);
+  const dayName=day=>day===chinaToday()?'今日':day===prevDay(chinaToday())?'昨日':day.slice(5).replace('-','/');
+  function consoleFigures(game) {
+    const rows=(game.console_daily||[]).slice().sort((a,b)=>a.day<b.day?-1:1), byDay=new Map(rows.map(r=>[r.day,r]));
+    const latest=key=>{for (let i=rows.length-1;i>=0;i--) if (rows[i][key]!=null) return rows[i]; return null;};
+    const spark=key=>{const line=rows.filter(r=>r[key]!=null).map(r=>r[key]); return line.length>1?AdminCharts.sparkline(line):null;};
+    const change=(row,key,format=number,relative=true)=>{
+      const before=row&&byDay.get(prevDay(row.day))?.[key]; if (before==null) return '';
+      const delta=relative&&before?Math.round((row[key]-before)/before*100):null;
+      return `${delta==null?'':(delta>=0?'+':'')+delta+'% · '}前一日 ${format(before)}`;
+    };
+    const count=(label,key)=>{const row=latest(key); return figure(row?`${dayName(row.day)}${label}`:label,row?number(row[key]):'—',spark(key),change(row,key));};
+    const ratio=(label,key)=>{const row=latest(key); return figure(label,row?rate(row[key]):'—',null,row?[dayName(row.day),change(row,key,rate,false)].filter(Boolean).join(' · '):'');};
+    const nodes=[];
+    if (rows.some(r=>r.impressions!=null)) {
+      const funnel=el('div','core-figs funnel');
+      funnel.append(count('曝光','impressions'),ratio('商店页点击率','click_rate'),count('访问详情页','detail_visits'),ratio('详情页启动转化率','launch_rate'),count('转化（启动）','launches'));
+      const total=key=>rows.reduce((sum,r)=>sum+(r[key]||0),0), span=rows.filter(r=>r.impressions!=null).length;
+      funnel.append(figure(`近 ${span} 天曝光`,number(total('impressions')),null,`启动 ${number(total('launches'))} · 整体转化 ${rate(total('impressions')?total('launches')/total('impressions'):null)}`));
+      nodes.push(el('span','core-sub','曝光转化漏斗'),funnel);
+    }
+    const extra=el('div','core-figs');
+    if (rows.some(r=>r.ad_revenue!=null)) {
+      const row=latest('ad_revenue'), month=rows.filter(r=>r.ad_revenue!=null);
+      extra.append(figure(`${dayName(row.day)}广告收益`,yuan(row.ad_revenue),spark('ad_revenue'),change(row,'ad_revenue',yuan)),
+        figure(`近 ${month.length} 天广告收益`,yuan(month.reduce((sum,r)=>sum+r.ad_revenue,0)),null,'预估收益，以每月结算为准'));
+    }
+    if (rows.some(r=>r.active_devices!=null)) {
+      const row=latest('active_devices');
+      extra.append(figure(`${dayName(row.day)}活跃设备`,number(row.active_devices),spark('active_devices'),row.new_devices!=null?`新增 ${number(row.new_devices)}`:''));
+      const ret=latest('retention_1d'), ret7=latest('retention_7d');
+      extra.append(figure('次日留存',ret?rate(ret.retention_1d):'—',null,[ret?dayName(ret.day)+'新增':'',ret7?`7 日留存 ${rate(ret7.retention_7d)}`:''].filter(Boolean).join(' · ')));
+    }
+    if (extra.childElementCount) nodes.push(el('span','core-sub','广告收益与活跃'),extra);
+    return nodes;
   }
   function drawCoreTrend() {
     const data=coreData, host=$('#core-trend'); if (!data) return;
@@ -643,16 +697,32 @@
     }
   }
 
+  function drawConsoleCharts() {
+    const wrap=$('#console-charts'), data=coreData; if (!data) return;
+    const since=data.days[0], games=data.games.filter(g=>(g.console_daily||[]).some(r=>r.day>=since && (r.launches!=null || r.ad_revenue!=null)));
+    wrap.hidden=!games.length; if (!games.length) return;
+    const axis=[...new Set(games.flatMap(g=>g.console_daily.map(r=>r.day)))].filter(day=>day>=since).sort();
+    const palette=['var(--c-review)','var(--c-topic)','var(--c-review_comment)','var(--c-topic_comment)','var(--danger)','var(--warn)'];
+    const chart=(host,key,label,unit,emptyText)=>{
+      const owners=games.filter(g=>g.console_daily.some(r=>r.day>=since && r[key]!=null));
+      if (!owners.length) {AdminCharts.empty(host,emptyText); return;}
+      const series=owners.map(g=>['g'+g.app_id,g.title,palette[games.indexOf(g)%palette.length]]);
+      const daily=axis.map(day=>{const row={date:day}; owners.forEach(g=>{row['g'+g.app_id]=g.console_daily.find(r=>r.day===day)?.[key]||0;}); return row;});
+      AdminCharts.trend(host,daily,{series,unit,label,emptyText});
+    };
+    chart($('#launch-trend'),'launches','每日转化（启动）',' 次','暂无启动数据。');
+    chart($('#revenue-trend'),'ad_revenue','每日广告收益',' 元','暂无广告收益（作品需开通广告变现）。');
+  }
+
   /* ---------- 官方数据授权 ---------- */
   async function loadOfficial() {
     clearTimeout(officialTimer);
-    const data=await api('official'); renderOfficial(data);
-    const waiting=data.auth.status==='waiting' || data.syncing;
-    if (waiting && view==='developers' && tab==='official') officialTimer=setTimeout(()=>loadOfficial().catch(error=>notify(error.message)),3000);
+    const [data,consoleData]=await Promise.all([api('official'),api('console')]); renderOfficial(data); renderConsole(consoleData);
+    const waiting=data.auth.status==='waiting' || data.syncing || consoleData.syncing || ['waiting','scanned','connecting'].includes(consoleData.auth?.status);
+    if (waiting && view==='sources') officialTimer=setTimeout(()=>loadOfficial().catch(error=>notify(error.message)),3000);
   }
   function renderOfficial(data) {
     const host=$('#official-panel'), nodes=[];
-    nodes.push(el('p','muted small','官方数据授权对整个系统生效（不区分厂商）：授权账号下的作品会使用 TapTap 官方开放接口的数据，其余作品继续使用公开数据。'));
     if (!data.installed) {
       const box=el('div','sub-card'); box.append(el('h3','','未安装官方数据组件'),el('p','muted','官方数据需要服务器上的 Node.js 组件。请在服务器上重新运行安装脚本（数据与配置会保留）：'),el('pre','command','sudo sh /opt/taptap-monitor/taptap-monitor/scripts/install.sh'));
       host.replaceChildren(...nodes,box); return;
@@ -680,15 +750,62 @@
     actions.append(button(data.syncing?'同步中…':'立即同步',async()=>{renderOfficial(await api('official/sync','POST')); await loadOfficial();},'primary'),
       button('解绑',async()=>{if (!confirm('确定解绑 TapTap 官方数据吗？已同步的历史数据会保留，之后将改用公开数据。')) return; renderOfficial(await api('official/auth','DELETE')); notify('已解绑官方数据。');},'ghost'));
     if (data.syncing) actions.firstChild.disabled=true;
-    box.append(head,actions);
+    box.append(el('h3','','TapTap 官方数据'),el('p','muted small','对整个系统生效：授权账号下的作品使用官方开放接口数据（下载、预约、评分趋势等），其余作品使用公开数据。'),head,actions);
     if (data.error) box.append(el('p','error',data.error));
     const list=el('div','official-apps');
     if (!data.apps.length) list.append(el('p','muted','该账号下没有可用的作品。'));
     data.apps.slice().sort((a,b)=>b.monitored-a.monitored).forEach(app=>{
       const row=el('div','official-app'); row.append(el('strong','',app.title),el('span','muted small',app.developer_name),el('span','chip '+(app.monitored?'ok':'muted'),app.monitored?'已监测':'未监测')); list.append(row);
     });
-    box.append(el('h3','small muted','授权账号下的作品'),list,el('p','muted small','只有同时在监测列表中的作品才会同步官方数据；未监测的作品可在左侧添加其厂商。'));
+    const apps=el('details','app-list'); apps.append(el('summary','muted small',`授权账号下的作品（${data.apps.length}）`),list,el('p','muted small','只有同时在监测列表中的作品才会同步官方数据；未监测的作品可在「厂商与官网」添加其厂商。'));
+    box.append(apps);
     host.replaceChildren(...nodes,box);
+  }
+
+  /* ---------- 开发者后台数据（Cookie 会话） ---------- */
+  function renderConsole(data) {
+    const host=$('#console-panel'), box=el('div','sub-card console-card'), auth=data.auth || {};
+    box.append(el('h3','','开发者后台：曝光漏斗 · 广告收益 · 活跃留存'),
+      el('p','muted small','官方开放接口不提供曝光、商店页点击率、启动转化和广告收益。用 TapTap App 扫码登录开发者后台后，系统每 2 小时读取一次后台页面的数据。登录信息只保存在服务器的数据库中，不会返回到浏览器；后台会话过期时会自动续期，续不上才需要重新扫码。这些是后台内部接口，改版后可能失效。'));
+    if (data.configured) {
+      const head=el('div','official-account'), who=el('div');
+      who.append(el('strong','',data.account?.name || '开发者后台账号'),el('span','muted small',data.syncing?'正在同步开发者后台数据…':`最近同步：${data.synced_at?date(data.synced_at):'尚未同步'}${data.method==='qr'?' · 扫码登录':data.method==='cookie'?' · Cookie':''}`));
+      head.append(who,el('span','chip '+(data.valid?'ok':'muted'),data.valid?'已连接':'已失效')); box.append(head);
+      const actions=el('div','actions');
+      if (data.valid) {const sync=button(data.syncing?'同步中…':'立即同步',async()=>{renderConsole(await api('console/sync','POST')); await loadOfficial();},'primary'); sync.disabled=data.syncing; actions.append(sync);}
+      actions.append(button('退出登录',async()=>{if (!confirm('确定退出开发者后台登录吗？已同步的数据会保留。')) return; renderConsole(await api('console','DELETE')); notify('已退出开发者后台登录。');},'ghost'));
+      box.append(actions);
+    }
+    if (data.error) box.append(el('p','error',data.error));
+    if (!data.configured || !data.valid) {
+      const login=el('div','official-auth');
+      if (['waiting','scanned'].includes(auth.status) && /^data:image\/svg\+xml;base64,/.test(auth.qr || '')) {
+        const qr=el('div','qr-box'), img=el('img'); img.src=auth.qr; img.alt='TapTap 登录二维码'; img.width=img.height=200; qr.append(img);
+        const left=Math.max(0,Math.round((auth.expires_at || 0)-Date.now()/1000));
+        login.append(qr,el('p',auth.status==='scanned'?'':'muted small',auth.status==='scanned'?auth.message:`${auth.message} · 二维码 ${Math.floor(left/60)} 分 ${left%60} 秒后过期`));
+      } else if (auth.status==='connecting') {
+        login.append(el('p','muted',auth.message));
+      } else {
+        if (auth.message && auth.status!=='idle') login.append(el('p',auth.status==='success'?'muted':'error',auth.message));
+        const actions=el('div','actions'); actions.append(button(auth.status==='expired'||auth.status==='failed'?'重新获取二维码':'扫码登录开发者后台',async()=>{renderConsole(await api('console/login','POST')); await loadOfficial();},'primary'));
+        login.append(actions);
+      }
+      const manual=el('details','console-manual'), summary=el('summary','muted small','备用：手动粘贴 Cookie');
+      const input=el('textarea'); input.rows=3; input.maxLength=16384; input.autocomplete='off'; input.spellcheck=false;
+      input.placeholder='在已登录的 developer.taptap.cn 按 F12 → Network，刷新后点任意 /api/ 请求，复制请求头里的 Cookie 粘贴到这里';
+      const save=button('保存并连接',async()=>{
+        if (!input.value.trim()) throw new Error('请先粘贴 Cookie');
+        const result=await api('console','PUT',{cookie:input.value.trim()}); input.value=''; renderConsole(result); notify('已连接开发者后台，正在同步数据。'); await loadOfficial();
+      },'ghost');
+      manual.append(summary,input,save);
+      box.append(login,manual);
+    }
+    if (data.apps?.length) {
+      const list=el('div','official-apps');
+      data.apps.slice().sort((a,b)=>b.monitored-a.monitored).forEach(app=>{const row=el('div','official-app'); row.append(el('strong','',app.title),el('span','muted small',app.developer_name),el('span','chip '+(app.monitored?'ok':'muted'),app.monitored?'已监测':'未监测')); list.append(row);});
+      const apps=el('details','app-list'); apps.append(el('summary','muted small',`后台账号下的作品（${data.apps.length}）`),list); box.append(apps);
+    }
+    host.replaceChildren(box);
   }
 
   /* ---------- 数据洞察 ---------- */
@@ -706,7 +823,7 @@
     $('#insight-alert').hidden=!r.alert; $('#insight-alert').textContent=r.alert ? '⚠ '+r.alert : '';
     const meter=v=>{const m=el('div','meter'), f=el('i'); f.style.width=`${(v||0)*100}%`; m.append(f); return m;};
     $('#insight-kpis').replaceChildren(
-      kpi('贝叶斯评分',r.bayesian==null?'—':[ten1(r.bayesian),'/10'],[`原始均分 ${ten1(r.mean)}`,`${number(r.count)} 条评价`]),
+      kpi('玩家均分',r.mean==null?'—':[ten1(r.mean),'/10'],[`${number(r.count)} 条带评分的评价`]),
       kpi('好评率',pct(r.positive_rate),[`Wilson 下界 ${pct(r.wilson_lower)}`],meter(r.positive_rate)),
       kpi('差评率',pct(r.negative_rate),[r.recent_mean==null?'近 7 天暂无评分':`近 7 天均分 ${ten1(r.recent_mean)}`,r.previous_mean==null?'':`前 7 天 ${ten1(r.previous_mean)}`]),
       kpi('官方回复率',pct(resp.official_reply_rate),[`${number(resp.replied)} / ${number(resp.total)} 条评价`,resp.median_hours==null?'':`中位响应 ${resp.median_hours<1?Math.round(resp.median_hours*60)+' 分钟':resp.median_hours.toFixed(1)+' 小时'}`]),
@@ -715,8 +832,8 @@
     const rating=$('#insight-rating'); rating.replaceChildren();
     if (!r.count) AdminCharts.empty(rating,'时间范围内暂无带评分的评价。');
     else {
-      const rows=[['贝叶斯评分',ten1(r.bayesian)+' /10',`评价越少越向整体均值 ${ten1(r.prior_mean)} 收缩（先验权重 ${r.prior_weight} 条）`],
-        ['原始均分',ten1(r.mean)+' /10',`${number(r.count)} 条评价的简单平均`],
+      const rows=[['玩家均分',ten1(r.mean)+' /10',`${number(r.count)} 条评价的平均分`],
+        ['好评 / 差评',`${pct(r.positive_rate)} / ${pct(r.negative_rate)}`,'好评 8–10 分，差评 2–4 分'],
         ['好评率下界',pct(r.wilson_lower),`95% 置信下，真实好评率至少为该值（好评率 ${pct(r.positive_rate)}）`],
         ['近 7 天 vs 前 7 天',`${ten1(r.recent_mean)} / ${ten1(r.previous_mean)}`,'均分下降 1 分（十分制）以上或差评率超过 40% 会触发预警']];
       rows.forEach(([k,v,hint])=>{const row=el('div','rating-row'); row.append(el('span','muted',k),el('strong','',v),el('span','muted small',hint)); rating.append(row);});
@@ -761,7 +878,9 @@
 
   /* ---------- 路由与事件 ---------- */
   async function route(focus=false) {
-    view=location.hash.replace(/^#\//,'').split('/')[0]; if (!views[view]) {location.hash='#/overview'; return;}
+    view=location.hash.replace(/^#\//,'').split('/')[0];
+    if (view==='runs') {location.hash='#/sources'; return;}  // 旧链接
+    if (!views[view]) {location.hash='#/overview'; return;}
     $('#notice').hidden=true; clearTimeout(officialTimer);
     Object.keys(views).forEach(key=>{$('#view-'+key).hidden=key!==view; const nav=document.querySelector(`[data-view="${key}"]`); if (key===view) nav.setAttribute('aria-current','page'); else nav.removeAttribute('aria-current');});
     $('#view-title').textContent=views[view][0]; $('#view-subtitle').textContent=views[view][1]; document.title=views[view][0]+' · 作品监测管理'; if (focus) $('#view-title').focus();
@@ -770,7 +889,7 @@
     if (view==='data') await loadFeedback();
     if (view==='insights') await loadInsights();
     if (view==='developers') {await loadCatalog(); if (!developerId && developers.length) developerId=primaryId(); renderDevelopers(); if (developerId) await loadSite();}
-    if (view==='runs') await loadRuns();
+    if (view==='sources') await Promise.all([loadRuns(),loadOfficial().catch(error=>$('#official-panel').replaceChildren(el('p','error',error.message)))]);
     if (view==='settings') {await loadSettings(); await loadUpgrade();}
   }
   async function connect() {
@@ -787,7 +906,15 @@
   $('#sync-site').addEventListener('click',guarded(async()=>{if (developerId) await scan(developerId);}));
   $('#dev-incremental').addEventListener('click',guarded(async()=>{if (developerId) await scan(developerId);}));
   $('#dev-full').addEventListener('click',guarded(async()=>{if (developerId) await scan(developerId,'full');}));
-  $('#core-auth').addEventListener('click',()=>{tab='official'; location.hash='#/developers';});
+  $('#dev-delete').addEventListener('click',guarded(async()=>{
+    const developer=developers.find(d=>d.id===developerId); if (!developer) return;
+    if (!confirm(`确定删除厂商「${developer.name}」吗？\n\n将删除它的官网设置，以及只属于它的 ${number(developer.game_count)} 款作品和约 ${number(developer.feedback_count)} 条反馈等数据。此操作无法撤销。`)) return;
+    const result=await api('developers/'+developerId,'DELETE');
+    developerId=null; await loadCatalog(); if (developers.length) developerId=primaryId(); renderDevelopers(); if (developerId) await loadSite(); await loadStatus();
+    notify(`已删除厂商「${developer.name}」，清理了 ${number(result.games)} 款作品、${number(result.items)} 条反馈。`);
+  }));
+  $('#core-auth').addEventListener('click',()=>{location.hash='#/sources';});
+  $('#core-back').addEventListener('click',guarded(async()=>{$('#overview-game').value=''; await loadOverview();}));
   $('#insight-developer').addEventListener('change',guarded(async()=>{$('#insight-game').value=''; await gameOptions($('#insight-developer'),$('#insight-game')); await loadInsights();}));
   $('#insight-game').addEventListener('change',guarded(loadInsights));
   $('#insight-range').addEventListener('click',guarded(async event=>{const b=event.target.closest('button[data-days]'); if (!b) return; insightDays=Number(b.dataset.days); $('#insight-range').querySelectorAll('button').forEach(x=>x.setAttribute('aria-checked',String(x===b))); await loadInsights();}));
@@ -826,12 +953,12 @@
   window.addEventListener('hashchange',guarded(()=>route(true)));
   let resizeTimer;
   window.addEventListener('resize',()=>{clearTimeout(resizeTimer); resizeTimer=setTimeout(()=>{
-    if (view==='overview' && overviewData) {AdminCharts.trend($('#trend'),overviewData.daily); drawCoreTrend();}
+    if (view==='overview' && overviewData) {AdminCharts.trend($('#trend'),overviewData.daily); drawCoreTrend(); drawConsoleCharts();}
     if (view==='insights' && insightData) drawWeekly();
   },120);});
   async function poll() {
     if (document.hidden || $('#workspace').hidden || polling) return; polling=true;
-    try {await loadStatus(); if (view==='runs') await loadRuns(false);}
+    try {await loadStatus(); if (view==='sources') await loadRuns(false);}
     catch(error) {notify(error.message);} finally {polling=false;}
   }
   setInterval(poll,10000); document.addEventListener('visibilitychange',()=>{if (!document.hidden) poll();});

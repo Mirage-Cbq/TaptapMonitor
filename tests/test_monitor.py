@@ -315,7 +315,7 @@ def test_feedback_list_orders_by_publication_not_collection_order(store):
 
 def test_fresh_server_scans_immediately_even_just_after_boot(settings, monkeypatch):
     import taptap_monitor.app as app_module
-    monkeypatch.setattr(app_module, 'time', SimpleNamespace(monotonic=lambda: 10))
+    monkeypatch.setattr(app_module, 'time', SimpleNamespace(time=lambda: 10, monotonic=lambda: 10))
 
     class Source:
         safe_url = staticmethod(TapTapClient.safe_url)
@@ -506,7 +506,7 @@ def test_dashboard_auth_and_developer_rename(settings):
         app_store.save_profile(383549, {'name': 'TapTap 自动名称'})
         assert app_store.developer(383549)['name'] == '新厂商名'
         assert client.patch(path, headers=headers, json={'name': 'x' * 121}).status_code == 422
-        assert client.delete(path, headers=headers).status_code == 405
+        assert client.delete(path).status_code == 401
 
 
 def test_request_timeout_updates_between_requests(settings):
@@ -1218,8 +1218,7 @@ def test_insights_rating_keywords_response_and_growth(settings, store):
     result = analyze(store, 30, app_id=100)
     rating = result['rating']
     assert rating['count'] == 11 and rating['mean'] == pytest.approx(31 / 11)
-    assert rating['prior_mean'] == 3 and rating['prior_weight'] == 20
-    assert rating['bayesian'] == pytest.approx(91 / 31)
+    assert 'bayesian' not in rating and not any(m['key'] == 'bayesian' for m in result['methods'])
     assert rating['positive_rate'] == pytest.approx(5 / 11) and rating['negative_rate'] == pytest.approx(6 / 11)
     assert 0 < rating['wilson_lower'] < rating['positive_rate']
     assert rating['recent_mean'] == 1 and rating['previous_mean'] == 5 and '下降' in rating['alert']
@@ -1234,7 +1233,7 @@ def test_insights_rating_keywords_response_and_growth(settings, store):
                                    'hits_delta': 30, 'reviews_delta': None, 'downloads_delta': 4, 'days': 10}
     assert analyze(store, 30, developer_id=999)['growth'][0]['fans_delta'] == 5
     assert analyze(store, 7, app_id=100)['rating']['previous_mean'] == 5
-    assert len(result['methods']) == 7
+    assert len(result['methods']) == 6
     with TestClient(create_app(settings, scheduler_enabled=False)) as client:
         headers = {'Authorization': 'Bearer ' + settings.api_token}
         assert client.get('/api/insights').status_code == 401
@@ -1269,7 +1268,7 @@ def test_insights_empty_window_and_metric_fallback(store):
     from datetime import date, timedelta
     from taptap_monitor.insights import analyze
     empty = analyze(store, 7)
-    assert empty['rating']['prior_mean'] == 3.5 and empty['rating']['bayesian'] is None
+    assert empty['rating']['mean'] is None and empty['rating']['count'] == 0
     assert empty['response']['official_reply_rate'] is None and empty['response']['median_hours'] is None
     assert empty['keywords'] == {'negative': [], 'positive': []} and empty['anomalies'] == []
     store.save_metrics(100, 'official', {'download_count': 99})
@@ -1308,3 +1307,193 @@ def test_official_summary_reads_live_store_snapshot_and_review_trend():
     assert days["2026-11-08"]["positive_count"] == 3 and "timestamp" not in days["2026-11-08"]
     community = dict(daily_metrics(report_data(reports["community_overview"]["data"])))
     assert community["2026-11-08"] == {"topic_trend_value": 2} or community["2026-11-08"].get("favorite_trend_value") == 5
+
+
+def test_console_daily_figures_parse_rates_and_skip_immature_retention():
+    from datetime import date
+    from taptap_monitor.console import daily_figures, number, clean_cookie
+    assert number("9.53%") == pytest.approx(0.0953) and number("82.05") == 82.05 and number("-") is None and number(True) is None
+    assert clean_cookie("Cookie: a=1; b=2\n") == "a=1; b=2"
+    with pytest.raises(Exception):
+        clean_cookie("not a cookie")
+    days = daily_figures(
+        funnel=[{"date": "2026-11-08", "impression_cnt": 1563, "click_cnt": 149, "click_rate": "9.53%", "convert_detail_cnt": 52, "convert_detail_rate": "34.90%"}],
+        retention=[{"date": "2026-11-01", "ret_new_active_device_rate_a1d": "17.19%", "ret_new_active_device_rate_a7d": "0.00%"},
+                   {"date": "2026-11-08", "ret_new_active_device_rate_a1d": "0.00%"}],
+        revenue=[{"date": "2026-11-07", "revenue": "54.78"}], today=date(2026, 11, 8))
+    assert days["2026-11-08"] == {"impressions": 1563, "detail_visits": 149, "click_rate": pytest.approx(0.0953), "launches": 52, "launch_rate": pytest.approx(0.349)}
+    assert days["2026-11-01"] == {"retention_1d": pytest.approx(0.1719)}  # 7-day cell not mature yet
+    assert days["2026-11-07"] == {"ad_revenue": 54.78}
+
+
+def console_backend(state):
+    def handle(request):
+        state.setdefault("cookies", []).append(request.headers.get("cookie"))
+        if state.get("expired"):
+            return httpx.Response(401, json={"success": False, "data": {"code": -1, "error": "access_denied", "msg": "未认证"}})
+        path, query = request.url.path, request.url.params
+        rows = lambda *items: {"success": True, "data": {"list": list(items)}}
+        day = query.get("start_date") or query.get("start_time")
+        payloads = {
+            "/api/user/v1/me": {"success": True, "data": {"user": {"name": "Studio Owner"}}},
+            "/api/developer/v1/list": {"success": True, "data": {"list": [{"id": 383549, "name": "Test Studio"}]}},
+            "/api/app/v2/list": {"success": True, "data": {"total": 2, "list": [{"id": 100, "title": "Test Game"}, {"id": 200, "title": "Unmonitored"}]}},
+            "/api/dashboard/v2/stats-by-day/position/cn": rows({"date": day, "impression_cnt": 1000, "click_cnt": 100, "click_rate": "10.00%", "convert_detail_cnt": 40, "convert_detail_rate": "40.00%"}),
+            "/api/dashboard/v3/stats-by-day/pv/cn": rows({"date": day, "pv_from_total": 120}),
+            "/api/mini-app/v1/stats-by-day/device": rows({"date": day, "active_device_num": 50, "new_active_device_num": 30}),
+            "/api/mini-app/v1/stats-by-day/ret": rows(),
+            "/api/mini-app/v1/ad/info": {"success": True, "data": {"is_enabled": True, "settlement_entity": {"bank_card_number": "secret"}}},
+            "/api/mini-app/v1/ad/payout-report-data": rows({"date": day, "revenue": "12.34"}),
+        }
+        state.setdefault("urls", []).append(str(request.url))
+        return httpx.Response(200, json=payloads[path]) if path in payloads else httpx.Response(404, json={"success": False})
+    return httpx.MockTransport(handle)
+
+
+def test_console_session_syncs_funnel_and_revenue_without_exposing_cookie(settings, store):
+    backend = {}
+    headers = {"Authorization": "Bearer " + settings.api_token}
+    with TestClient(create_app(settings, scheduler_enabled=False, console_transport=console_backend(backend))) as client:
+        assert client.post("/api/console/sync", headers=headers).status_code == 409
+        assert client.put("/api/console", headers=headers, json={"cookie": "plain"}).status_code == 409
+        status = client.put("/api/console", headers=headers, json={"cookie": "Cookie: session=abc123"}).json()
+        assert status["configured"] and status["valid"] and "cookie" not in status and "abc123" not in json.dumps(status)
+        assert {app["app_id"]: app["monitored"] for app in status["apps"]} == {100: True, 200: False}
+        for _ in range(100):
+            status = client.get("/api/console", headers=headers).json()
+            if not status["syncing"] and status["synced_at"]:
+                break
+            time.sleep(0.02)
+        assert status["error"] is None and set(backend["cookies"]) == {"session=abc123"}
+        assert any("app_id=100" in url for url in backend["urls"]) and not any("app_id=200" in url for url in backend["urls"])
+        game = next(g for g in client.get("/api/metrics?days=30", headers=headers).json()["games"] if g["app_id"] == 100)
+        row = game["console_daily"][0]
+        assert row["impressions"] == 1000 and row["click_rate"] == pytest.approx(0.1) and row["launches"] == 40
+        assert row["ad_revenue"] == 12.34 and row["active_devices"] == 50 and row["store_page_views"] == 120
+        assert "secret" not in json.dumps(store.setting("console"))
+        backend["expired"] = True
+        client.post("/api/console/sync", headers=headers)
+        for _ in range(100):
+            status = client.get("/api/console", headers=headers).json()
+            if not status["syncing"] and not status["valid"]:
+                break
+            time.sleep(0.02)
+        assert not status["valid"] and "失效" in status["error"]
+        cleared = client.delete("/api/console", headers=headers).json()
+        assert not cleared["configured"] and store.setting("console")["cookie"] is None
+
+
+def test_delete_developer_removes_owned_games_but_keeps_shared(settings, store):
+    store.add_developer(999, "Other Studio")
+    store.save_game(999, {"id": 100, "title": "Test Game"})  # shared with 383549
+    store.save_game(383549, {"id": 300, "title": "Owned Game"})
+    store.save_item(Item(300, "review", "9", "", "Owned feedback", "https://www.taptap.cn/review/9", published_at=int(time.time())))
+    store.save_item(item())
+    store.save_metrics(300, "console", {"impressions": 5})
+    store.save_stream("reviews:300", "", "ok")
+    store.save_stream("comments:300:review:9", "", "ok")
+    store.save_stream("reviews:100", "", "ok")
+    headers = {"Authorization": "Bearer " + settings.api_token}
+    with TestClient(create_app(settings, scheduler_enabled=False)) as client:
+        assert client.delete("/api/developers/12345", headers=headers).status_code == 404
+        result = client.delete("/api/developers/383549", headers=headers).json()
+        assert result == {"games": 1, "items": 1}
+        assert [d["id"] for d in client.get("/api/developers", headers=headers).json()] == [999]
+    assert {g["id"] for g in store.games()} == {100}
+    assert store.query("SELECT COUNT(*) n FROM items WHERE app_id=300")[0]["n"] == 0
+    assert store.metrics([300], "console") == []
+    assert store.stream("reviews:300") is None and store.stream("comments:300:review:9") is None and store.stream("reviews:100")
+    assert store.query("SELECT COUNT(*) n FROM items WHERE app_id=100")[0]["n"] == 1
+    # config.toml still lists 383549, but a restart must not bring it back until it is added again.
+    with TestClient(create_app(settings, scheduler_enabled=False)) as client:
+        assert [d["id"] for d in client.get("/api/developers", headers=headers).json()] == [999]
+        assert client.post("/api/developers", headers=headers, json={"id": 383549}).status_code == 201
+    assert store.setting("removed_developers") == []
+
+
+def login_backend(state):
+    """accounts.taptap.cn device-code login + developer.taptap.cn OAuth handshake + console data."""
+    console = console_backend(state)
+
+    def handle(request):
+        host, path = request.url.host, request.url.path
+        cookies = request.headers.get("cookie", "")
+        ok = lambda data, **kw: httpx.Response(200, json={"success": True, "data": data}, **kw)
+        fail = lambda status, error: httpx.Response(status, json={"success": False, "data": {"error": error, "msg": error}})
+        if host == "accounts.taptap.cn":
+            assert request.url.params.get("X-UA", "").startswith("V=1&PN=Accounts")
+            if path == "/api/device-code/get":
+                assert b"session_id=" in request.content
+                return ok({"device_code": "dc", "qrcode_url": "https://accounts.taptap.cn/device?qrcode=1&user_code=AB", "expires_in": 30, "interval": 0.01})
+            if path == "/api/device-code/login":
+                state["polls"] = state.get("polls", 0) + 1
+                if state["polls"] == 1:
+                    return fail(400, "authorization_pending")
+                if state["polls"] == 2:
+                    return fail(400, "authorization_waiting")
+                return ok({}, headers={"set-cookie": "ACCOUNT_SID=acc; Domain=.accounts.taptap.cn; Path=/"})
+            if path == "/api/oauth2/auth/v2":
+                if "ACCOUNT_SID=acc" not in cookies:
+                    return fail(401, "access_denied")
+                assert "client_id=cid" in request.url.params["parameters"]
+                return ok({"redirect_uri": "https://developer.taptap.cn/auth/callback/taptap?code=CODE&state=ST"})
+        if host == "developer.taptap.cn" and path == "/api/auth/login/url":
+            return ok({"url": "https://accounts.taptap.cn/authorize?client_id=cid&response_type=code&state=ST"},
+                      headers={"set-cookie": "DC_XSRF_TOKEN=xsrf; Path=/"})
+        if host == "developer.taptap.cn" and path == "/api/auth/login":
+            assert request.headers["x-dc-xsrf-token"] == "xsrf" and json.loads(request.content) == {
+                "host": "developer.taptap.cn", "state": "ST", "code": "CODE", "path_prefix": "/v3"}
+            state["sessions"] = state.get("sessions", 0) + 1
+            return ok({"refer": "/v3/"}, headers={"set-cookie": f"DC_SESSION=s{state['sessions']}; Path=/; HttpOnly"})
+        if host == "developer.taptap.cn" and state.get("stale") and f"DC_SESSION=s{state.get('stale')}" in cookies:
+            return fail(401, "access_denied")
+        return console.handler(request)
+    return httpx.MockTransport(handle)
+
+
+def wait_for(client, headers, done, path="/api/console"):
+    for _ in range(200):
+        status = client.get(path, headers=headers).json()
+        if done(status):
+            return status
+        time.sleep(0.02)
+    raise AssertionError(status)
+
+
+def test_console_qr_login_connects_and_renews_expired_session(settings, store):
+    backend = {}
+    headers = {"Authorization": "Bearer " + settings.api_token}
+    with TestClient(create_app(settings, scheduler_enabled=False, console_transport=login_backend(backend))) as client:
+        started = client.post("/api/console/login", headers=headers).json()
+        assert started["auth"]["status"] == "waiting" and started["auth"]["qr"].startswith("data:image/svg+xml;base64,")
+        status = wait_for(client, headers, lambda s: s["auth"]["status"] in ("success", "failed", "expired") and not s["syncing"] and s["synced_at"])
+        assert status["auth"]["status"] == "success", status["auth"]
+        assert status["valid"] and status["method"] == "qr" and status["error"] is None
+        dumped = json.dumps(status)
+        assert "DC_SESSION" not in dumped and "ACCOUNT_SID" not in dumped and "jar" not in status
+        saved = store.setting("console")
+        assert "DC_SESSION=s1" in saved["cookie"] and "ACCOUNT_SID" not in saved["cookie"]
+        assert any(c["name"] == "ACCOUNT_SID" for c in saved["jar"])
+        assert store.metrics([100], "console")[0]["impressions"] == 1000
+        # The console session expires; the stored accounts session silently mints a new one.
+        backend["stale"] = 1
+        client.post("/api/console/sync", headers=headers)
+        status = wait_for(client, headers, lambda s: not s["syncing"] and backend.get("sessions") == 2)
+        assert status["valid"] and status["error"] is None and "DC_SESSION=s2" in store.setting("console")["cookie"]
+
+
+def test_restart_does_not_rescan_before_poll_interval(settings, store):
+    store.finish_run(store.start_run(), {"created": 0, "updated": 0}, [])
+    calls = []
+
+    class Source:
+        safe_url = staticmethod(TapTapClient.safe_url)
+        async def get(self, path, params=None):
+            calls.append(path)
+            return {"list": [], "next_page": ""}
+        async def close(self):
+            pass
+
+    with TestClient(create_app(replace(settings, cache_images=False), client=Source())) as client:
+        time.sleep(0.3)
+        assert calls == [] and not client.get("/api/status", headers={"Authorization": "Bearer " + settings.api_token}).json()["collecting"]
