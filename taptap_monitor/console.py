@@ -17,6 +17,7 @@ from io import BytesIO
 import logging
 import math
 import re
+import secrets
 import time
 from urllib.parse import parse_qs, urlsplit
 import uuid
@@ -232,7 +233,7 @@ class TapLogin:
         except ValueError:
             if response.status_code == 405 and "text/html" in response.headers.get("content-type", ""):
                 # TapTap's WAF rejects login endpoints from many cloud-server IPs; this is not retryable from here.
-                raise ConsoleError(f"{what}拦截了这台服务器的 IP（云服务器常见），无法在服务器上扫码登录，请改用下方「手动粘贴 Cookie」") from None
+                raise ConsoleError(f"{what}拦截了这台服务器的 IP（云服务器常见），请改用「用登录助手扫码」（在你自己的电脑上完成扫码）") from None
             raise ConsoleError(f"{what}返回了非 JSON 内容（HTTP {response.status_code}）") from None
         data = payload.get("data") if isinstance(payload, dict) else None
         if isinstance(payload, dict) and payload.get("success") is True:
@@ -298,6 +299,8 @@ class TapLogin:
         return header, jar
 
 
+PAIR_SECONDS = 15 * 60  # a downloaded login helper stays usable this long
+
 EMPTY = dict(cookie=None, jar=[], method=None, valid=False, account=None, developers=[], apps=[], backfilled=[],
              synced_at=None, error=None)
 SECRET = ("cookie", "jar")
@@ -312,6 +315,7 @@ class ConsoleService:
         self.state = {key: saved.get(key, default) for key, default in EMPTY.items()}
         self.auth = self.idle_auth()
         self.task = self.login_task = None
+        self.pair = None  # one-time code a downloaded login helper reports with
         self.lock = asyncio.Lock()
 
     @staticmethod
@@ -409,6 +413,45 @@ class ConsoleService:
         finally:
             await login.close()
 
+    async def begin_helper(self):
+        """Issue a one-time pairing code for the PC login helper (used when TapTap blocks this server's IP)."""
+        if self.login_task and not self.login_task.done():
+            self.login_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self.login_task
+        self.pair = {"code": secrets.token_urlsafe(24), "expires_at": time.time() + PAIR_SECONDS}
+        self.auth = {**self.idle_auth(), "status": "helper", "expires_at": self.pair["expires_at"],
+                     "message": "请双击运行刚下载的「TapTap登录助手」，二维码会显示在这里"}
+        return self.pair["code"]
+
+    async def helper_report(self, code, stage, qrcode_url=None, expires_in=None, cookie=None, message=None):
+        pair = self.pair
+        if not pair or time.time() > pair["expires_at"] or not secrets.compare_digest(code.encode(), pair["code"].encode()):
+            raise ConsoleAuthError("登录助手已失效，请回到后台重新下载")
+        if stage == "qr":
+            if not (qrcode_url or "").startswith("https://") or len(qrcode_url) > 2000:
+                raise ConsoleError("二维码地址无效")
+            lifetime = min(max(float(expires_in or 300), 30), PAIR_SECONDS)
+            self.auth = dict(status="waiting", qr=qr_data_uri(qrcode_url), expires_at=time.time() + lifetime,
+                             message="请使用 TapTap App 扫码登录")
+        elif stage == "scanned":
+            self.auth.update(status="scanned", message="扫码成功，请在手机上确认登录")
+        elif stage == "done":
+            self.pair = None
+            self.auth = {**self.idle_auth(), "status": "connecting", "message": "登录成功，正在连接开发者后台…"}
+            try:
+                await self.adopt(clean_cookie(cookie or ""), method="helper")
+            except ConsoleError as exc:
+                self.auth = {**self.idle_auth(), "status": "failed", "message": str(exc)[:200]}
+                raise
+            self.auth = {**self.idle_auth(), "status": "success", "message": "开发者后台已连接"}
+        elif stage == "error":
+            self.pair = None
+            self.auth = {**self.idle_auth(), "status": "failed", "message": f"登录助手：{message or '未知错误'}"[:200]}
+        else:
+            raise ConsoleError("未知的登录助手状态")
+        return self.status()
+
     async def renew(self):
         """Mint a fresh console session from the stored accounts session; False if that is gone too."""
         if not self.state["jar"]:
@@ -431,7 +474,7 @@ class ConsoleService:
                 with suppress(asyncio.CancelledError):
                     await task
         self.state = dict(EMPTY)
-        self.auth = self.idle_auth()
+        self.auth, self.pair = self.idle_auth(), None
         self.persist()
         return self.status()
 

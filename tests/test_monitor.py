@@ -1525,4 +1525,30 @@ def test_page_assets_revalidate_and_waf_block_is_explained(settings, store):
             assert client.get(path).headers["cache-control"] == "no-cache"
         assert client.get("/api/status", headers=headers).headers["cache-control"] == "no-store"
         status = client.post("/api/console/login", headers=headers).json()
-        assert status["auth"]["status"] == "failed" and "拦截" in status["auth"]["message"] and "手动粘贴 Cookie" in status["auth"]["message"]
+        assert status["auth"]["status"] == "failed" and "拦截" in status["auth"]["message"] and "登录助手" in status["auth"]["message"]
+
+
+def test_console_login_helper_pairs_from_admin_pc(settings, store):
+    headers = {"Authorization": "Bearer " + settings.api_token}
+    with TestClient(create_app(settings, scheduler_enabled=False, console_transport=console_backend({}))) as client:
+        assert client.post("/api/console/helper").status_code == 401
+        assert client.post("/api/console/pair/nope", json={"stage": "qr"}).status_code == 403
+        response = client.post("/api/console/helper", headers={**headers, "X-Forwarded-Proto": "https", "Host": "monitor.example.com"})
+        assert response.status_code == 200 and "attachment" in response.headers["content-disposition"]
+        script = response.content.decode("utf-8")
+        assert "\r\n" in script and settings.api_token not in script and "$Server = 'https://monitor.example.com'" in script
+        code = re.search(r"\$PairCode = '([^']+)'", script).group(1)
+        assert client.get("/api/console", headers=headers).json()["auth"]["status"] == "helper"
+        qr = client.post(f"/api/console/pair/{code}", json={"stage": "qr", "qrcode_url": "https://accounts.taptap.cn/device?user_code=AB", "expires_in": 120})
+        assert qr.json() == {"ok": True}
+        auth = client.get("/api/console", headers=headers).json()["auth"]
+        assert auth["status"] == "waiting" and auth["qr"].startswith("data:image/svg+xml;base64,")
+        client.post(f"/api/console/pair/{code}", json={"stage": "scanned"})
+        assert client.get("/api/console", headers=headers).json()["auth"]["status"] == "scanned"
+        done = client.post(f"/api/console/pair/{code}", json={"stage": "done", "cookie": "DC_SESSION=ok; acw_tc=1"})
+        assert done.json() == {"ok": True}
+        status = wait_for(client, headers, lambda s: not s["syncing"] and s["synced_at"])
+        assert status["valid"] and status["method"] == "helper" and status["auth"]["status"] == "success"
+        assert "DC_SESSION" not in json.dumps(status)
+        # The code is single-use.
+        assert client.post(f"/api/console/pair/{code}", json={"stage": "qr", "qrcode_url": "https://x"}).status_code == 403

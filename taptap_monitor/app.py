@@ -14,7 +14,7 @@ import hashlib
 from PIL import Image, UnidentifiedImageError
 
 from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -28,7 +28,8 @@ from .lock import ProcessLock
 from .upgrade import Updater, UpgradeError
 from .media import MediaCache
 from .official import OfficialBridge, OfficialError, OfficialService
-from .console import ConsoleError, ConsoleService
+from .console import ConsoleAuthError, ConsoleError, ConsoleService
+from .helper import helper_script
 from .insights import analyze
 
 log = logging.getLogger(__name__)
@@ -75,6 +76,14 @@ class GameUpdate(BaseModel):
 
 class ConsoleSession(BaseModel):
     cookie: str = Field(min_length=3, max_length=16384)
+
+
+class HelperReport(BaseModel):
+    stage: str = Field(max_length=16)
+    qrcode_url: str | None = Field(None, max_length=2000)
+    expires_in: float | None = None
+    cookie: str | None = Field(None, max_length=16384)
+    message: str | None = Field(None, max_length=500)
 
 
 class UpgradeRequest(BaseModel):
@@ -205,6 +214,17 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True, console_tr
     async def health():
         return {"status": "ok"}
 
+    @app.post("/api/console/pair/{code}")
+    async def console_pair(code: str, body: HelperReport):
+        # Called by the login helper on the admin's PC; the one-time code stands in for the admin token.
+        try:
+            await console.helper_report(code, **body.model_dump())
+        except ConsoleAuthError as exc:
+            raise HTTPException(403, str(exc)) from exc
+        except ConsoleError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return {"ok": True}
+
     @api.get("/status")
     async def status():
         return {**store.status(), "primary_developer_id": primary_site(), "collecting": bool(scan_task and not scan_task.done()), "active_run": active_run,
@@ -296,6 +316,18 @@ def create_app(settings=None, *, client=None, scheduler_enabled=True, console_tr
     @api.post("/console/login", status_code=202)
     async def console_login():
         return await console.begin_login()
+
+    @api.post("/console/helper")
+    async def console_helper(request: Request):
+        # The helper reports back to the address the admin is using; nginx passes Host and X-Forwarded-Proto.
+        proto = request.headers.get("x-forwarded-proto", request.url.scheme).split(",")[0].strip()
+        host = request.headers.get("host", "")
+        if proto not in ("http", "https") or not re.fullmatch(r"[A-Za-z0-9.\-:\[\]]{1,255}", host):
+            raise HTTPException(400, "无法确定服务器地址")
+        code = await console.begin_helper()
+        script = helper_script(f"{proto}://{host}", code).encode("utf-8")
+        return Response(script, media_type="application/octet-stream",
+                        headers={"Content-Disposition": 'attachment; filename="TapTapLoginHelper.bat"'})
 
     @api.delete("/console")
     async def console_clear():

@@ -718,7 +718,7 @@
   async function loadOfficial() {
     clearTimeout(officialTimer);
     const [data,consoleData]=await Promise.all([api('official'),api('console')]); renderOfficial(data); renderConsole(consoleData);
-    const waiting=data.auth.status==='waiting' || data.syncing || consoleData.syncing || ['waiting','scanned','connecting'].includes(consoleData.auth?.status);
+    const waiting=data.auth.status==='waiting' || data.syncing || consoleData.syncing || ['helper','waiting','scanned','connecting'].includes(consoleData.auth?.status);
     if (waiting && view==='sources') officialTimer=setTimeout(()=>loadOfficial().catch(error=>notify(error.message)),3000);
   }
   function renderOfficial(data) {
@@ -789,10 +789,16 @@
         login.append(qr,el('p',auth.status==='scanned'?'':'muted small',auth.status==='scanned'?auth.message:`${auth.message} · 二维码 ${Math.floor(left/60)} 分 ${left%60} 秒后过期`));
       } else if (auth.status==='connecting') {
         login.append(el('p','muted',auth.message));
+      } else if (auth.status==='helper') {
+        login.append(el('p','',auth.message),el('p','muted small','Windows 若提示「已保护你的电脑」，点「更多信息」→「仍要运行」。助手只在你的电脑上登录 TapTap，并把开发者后台的登录信息交给这台服务器；15 分钟内有效，用过即失效。'));
+        const actions=el('div','actions'); actions.append(button('重新下载登录助手',downloadHelper,'ghost')); login.append(actions);
       } else {
         if (auth.message && auth.status!=='idle') login.append(el('p',auth.status==='success'?'muted':'error',auth.message));
-        const actions=el('div','actions'); actions.append(button(auth.status==='expired'||auth.status==='failed'?'重新获取二维码':'扫码登录开发者后台',async()=>{renderConsole(await api('console/login','POST')); await loadOfficial();},'primary'));
-        login.append(actions);
+        const blocked=/拦截|登录助手/.test(auth.message || '');
+        const actions=el('div','actions');
+        actions.append(button(auth.status==='expired'||auth.status==='failed'?'重新获取二维码':'扫码登录开发者后台',async()=>{renderConsole(await api('console/login','POST')); await loadOfficial();},blocked?'ghost':'primary'),
+          button('用登录助手扫码',downloadHelper,blocked?'primary':'ghost'));
+        login.append(actions,el('p','muted small','云服务器的 IP 常被 TapTap 拦截而无法扫码：这时点「用登录助手扫码」，下载并在你的 Windows 电脑上双击运行，二维码会出现在这里，扫完自动连接。'));
       }
       const manual=el('details','console-manual'), summary=el('summary','muted small','备用：手动粘贴 Cookie');
       const input=el('textarea'); input.rows=3; input.maxLength=16384; input.autocomplete='off'; input.spellcheck=false;
@@ -801,7 +807,7 @@
         if (!input.value.trim()) throw new Error('请先粘贴 Cookie');
         const result=await api('console','PUT',{cookie:input.value.trim()}); input.value=''; renderConsole(result); notify('已连接开发者后台，正在同步数据。'); await loadOfficial();
       },'ghost');
-      if (auth.status==='failed' || data.method==='cookie') manual.open=true;
+      if (data.method==='cookie') manual.open=true;
       manual.append(summary,input,save);
       box.append(login,manual);
     }
@@ -811,6 +817,15 @@
       const apps=el('details','app-list'); apps.append(el('summary','muted small',`后台账号下的作品（${data.apps.length}）`),list); box.append(apps);
     }
     host.replaceChildren(box);
+  }
+
+  async function downloadHelper() {
+    const response=await fetch('/api/console/helper',{method:'POST',headers:{Authorization:'Bearer '+token},cache:'no-store'});
+    if (!response.ok) {let detail=''; try {detail=(await response.json()).detail;} catch {} throw new Error(typeof detail==='string' && detail ? detail : '下载登录助手失败');}
+    const url=URL.createObjectURL(await response.blob()), link=document.createElement('a');
+    link.href=url; link.download='TapTapLoginHelper.bat'; document.body.append(link); link.click(); link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),10000);
+    notify('已下载登录助手，请双击运行。'); await loadOfficial();
   }
 
   /* ---------- 数据洞察 ---------- */
